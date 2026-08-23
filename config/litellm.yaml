@@ -1,0 +1,18 @@
+model_list:
+  - model_name: codex-app-server
+    litellm_params:
+      model: openai/codex-app-server
+      api_base: os.environ/CODEX_ADAPTER_BASE_URL
+      api_key: os.environ/CODEX_ADAPTER_API_KEY
+      timeout: 3600
+
+litellm_settings:
+  request_timeout: 3600
+  drop_params: false
+  responses:
+    background_mode:
+      polling_via_cache: false
+      native_background_mode: []
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,9 @@
+.env
+.git
+.pytest_cache
+.ruff_cache
+.venv
+**/__pycache__
+**/*.pyc
+frontend/mcp-apps-host/node_modules
+frontend/mcp-apps-host/dist
