@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
@@ -191,12 +190,16 @@ async def test_worker_health_fails_when_agent_runtime_exits() -> None:
             )
             assert failed_rpc.status_code == 502
 
-            health = await client.get("/healthz")
-            for _ in range(100):
-                if health.status_code == 503:
-                    break
-                await asyncio.sleep(0.01)
-                health = await client.get("/healthz")
+            failure_events = await client.get(
+                "/v1/events",
+                headers={"Authorization": "Bearer worker-secret"},
+                params={"after": -1, "follow": "true"},
+            )
+            assert any(
+                event["type"] == "session_failed"
+                for event in _sse_events(failure_events.text)
+            )
 
+            health = await client.get("/healthz")
             assert health.status_code == 503
             assert health.json()["status"] == "failed"
