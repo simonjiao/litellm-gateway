@@ -1,0 +1,142 @@
+name: litellm-responses-gateway
+
+x-control-plane: &control-plane
+  build:
+    context: .
+    dockerfile: deploy/control-plane/Dockerfile
+    args:
+      PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+  image: ${CONTROL_PLANE_IMAGE:-litellm-responses-control:0.3.0}
+  runtime: runc
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+
+services:
+  gateway:
+    <<: *control-plane
+    command:
+      - litellm
+      - --config
+      - /opt/gateway/config/litellm.yaml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "4000"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
+      CODEX_ADAPTER_BASE_URL: http://responses-adapter:8090/v1
+      CODEX_ADAPTER_API_KEY: ${CODEX_ADAPTER_API_KEY:?set CODEX_ADAPTER_API_KEY}
+    ports:
+      - ${LITELLM_PORT:-4000}:4000
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; socket.create_connection(('127.0.0.1', 4000), 2).close()
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      responses-adapter:
+        condition: service_healthy
+    networks:
+      - control
+
+  responses-adapter:
+    <<: *control-plane
+    command:
+      - codex-responses-adapter
+    environment:
+      CODEX_ADAPTER_HOST: 0.0.0.0
+      CODEX_ADAPTER_PORT: "8090"
+      CODEX_ADAPTER_API_KEY: ${CODEX_ADAPTER_API_KEY:?set CODEX_ADAPTER_API_KEY}
+      CODEX_ADAPTER_SANDBOX_MANAGER_BASE_URL: http://sandbox-manager:8092
+      CODEX_ADAPTER_SANDBOX_MANAGER_API_KEY: ${SANDBOX_MANAGER_API_KEY:?set SANDBOX_MANAGER_API_KEY}
+      CODEX_ADAPTER_AGENT_WORKSPACE: ${CODEX_ADAPTER_AGENT_WORKSPACE:-/workspace}
+      CODEX_ADAPTER_CODEX_MODEL: ${CODEX_ADAPTER_CODEX_MODEL:-}
+      CODEX_ADAPTER_CODEX_EPHEMERAL_THREADS: ${CODEX_ADAPTER_CODEX_EPHEMERAL_THREADS:-false}
+      CODEX_ADAPTER_REQUEST_TIMEOUT_SECONDS: ${CODEX_ADAPTER_REQUEST_TIMEOUT_SECONDS:-3600}
+      CODEX_ADAPTER_MAX_CONCURRENT_EXECUTIONS: ${CODEX_ADAPTER_MAX_CONCURRENT_EXECUTIONS:-8}
+      CODEX_ADAPTER_SANDBOX_LEASE_RENEW_INTERVAL_SECONDS: ${CODEX_ADAPTER_SANDBOX_LEASE_RENEW_INTERVAL_SECONDS:-30}
+      CODEX_ADAPTER_MCP_APPS_ENABLED: ${CODEX_ADAPTER_MCP_APPS_ENABLED:-true}
+      CODEX_ADAPTER_MCP_APPS_PUBLIC_BASE_URL: ${CODEX_ADAPTER_MCP_APPS_PUBLIC_BASE_URL:-http://127.0.0.1:3000/api/codex-adapter}
+      CODEX_ADAPTER_MCP_APPS_ALLOWED_ORIGINS: ${CODEX_ADAPTER_MCP_APPS_ALLOWED_ORIGINS:-http://127.0.0.1:3000,http://localhost:3000}
+      CODEX_ADAPTER_MCP_APPS_INTERACTION_TIMEOUT_SECONDS: ${CODEX_ADAPTER_MCP_APPS_INTERACTION_TIMEOUT_SECONDS:-3600}
+      CODEX_ADAPTER_MCP_APPS_EVENT_KEEPALIVE_SECONDS: ${CODEX_ADAPTER_MCP_APPS_EVENT_KEEPALIVE_SECONDS:-15}
+      CODEX_ADAPTER_MCP_APPS_MAX_EVENT_HISTORY: ${CODEX_ADAPTER_MCP_APPS_MAX_EVENT_HISTORY:-512}
+      CODEX_ADAPTER_MCP_APPS_RESOURCE_MAX_BYTES: ${CODEX_ADAPTER_MCP_APPS_RESOURCE_MAX_BYTES:-4194304}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      sandbox-manager:
+        condition: service_healthy
+    networks:
+      - control
+      - agent-rpc
+
+  sandbox-manager:
+    <<: *control-plane
+    command:
+      - sandbox-manager
+    group_add:
+      - ${DOCKER_GID:?set DOCKER_GID to the Docker socket group id}
+    environment:
+      SANDBOX_MANAGER_HOST: 0.0.0.0
+      SANDBOX_MANAGER_PORT: "8092"
+      SANDBOX_MANAGER_API_KEY: ${SANDBOX_MANAGER_API_KEY:?set SANDBOX_MANAGER_API_KEY}
+      SANDBOX_MANAGER_WORKER_TOKEN_SECRET: ${SANDBOX_MANAGER_WORKER_TOKEN_SECRET:?set SANDBOX_MANAGER_WORKER_TOKEN_SECRET}
+      SANDBOX_MANAGER_IMAGE: ${SANDBOX_MANAGER_IMAGE:-litellm-codex-sandbox-worker:0.3.0}
+      SANDBOX_MANAGER_DOCKER_RUNTIME: ${SANDBOX_MANAGER_DOCKER_RUNTIME:-runsc}
+      SANDBOX_MANAGER_RPC_NETWORK: ${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}
+      SANDBOX_MANAGER_EGRESS_NETWORK: ${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}
+      SANDBOX_MANAGER_RESOLV_CONF_FILE: ${SANDBOX_MANAGER_RESOLV_CONF_FILE:?set SANDBOX_MANAGER_RESOLV_CONF_FILE}
+      SANDBOX_MANAGER_EGRESS_PROXY_URL: ${SANDBOX_MANAGER_EGRESS_PROXY_URL:-http://egress-proxy:3128}
+      SANDBOX_MANAGER_INTERNAL_NO_PROXY: ${SANDBOX_MANAGER_INTERNAL_NO_PROXY:-}
+      SANDBOX_MANAGER_EXECUTION_TTL_SECONDS: ${SANDBOX_MANAGER_EXECUTION_TTL_SECONDS:-1800}
+      SANDBOX_MANAGER_REAPER_INTERVAL_SECONDS: ${SANDBOX_MANAGER_REAPER_INTERVAL_SECONDS:-15}
+      SANDBOX_MANAGER_MEMORY_LIMIT: ${SANDBOX_MANAGER_MEMORY_LIMIT:-4g}
+      SANDBOX_MANAGER_NANO_CPUS: ${SANDBOX_MANAGER_NANO_CPUS:-2000000000}
+      SANDBOX_MANAGER_PIDS_LIMIT: ${SANDBOX_MANAGER_PIDS_LIMIT:-512}
+      SANDBOX_MANAGER_TMPFS_LIMIT: ${SANDBOX_MANAGER_TMPFS_LIMIT:-256m}
+      SANDBOX_MANAGER_CODEX_COMMAND: ${SANDBOX_MANAGER_CODEX_COMMAND:-codex app-server --stdio}
+      SANDBOX_MANAGER_CODEX_MODEL: ${SANDBOX_MANAGER_CODEX_MODEL:-}
+      SANDBOX_MANAGER_CODEX_AUTH_FILE: ${SANDBOX_MANAGER_CODEX_AUTH_FILE:?set SANDBOX_MANAGER_CODEX_AUTH_FILE}
+      SANDBOX_MANAGER_CODEX_CONFIG_FILE: ${SANDBOX_MANAGER_CODEX_CONFIG_FILE:-}
+      SANDBOX_MANAGER_MCP_APPS_ENABLED: ${CODEX_ADAPTER_MCP_APPS_ENABLED:-true}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SANDBOX_MANAGER_SECRET_DIR:?set SANDBOX_MANAGER_SECRET_DIR}:${SANDBOX_MANAGER_SECRET_DIR:?set SANDBOX_MANAGER_SECRET_DIR}:ro
+      - ${SANDBOX_MANAGER_RESOLV_CONF_FILE:?set SANDBOX_MANAGER_RESOLV_CONF_FILE}:${SANDBOX_MANAGER_RESOLV_CONF_FILE:?set SANDBOX_MANAGER_RESOLV_CONF_FILE}:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/healthz', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - control
+
+networks:
+  control:
+    external: true
+    name: ${CONTROL_NETWORK:-responses-control}
+  agent-rpc:
+    external: true
+    name: ${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}

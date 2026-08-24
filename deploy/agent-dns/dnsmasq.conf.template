@@ -1,0 +1,12 @@
+port=53
+listen-address=0.0.0.0
+bind-interfaces
+local-service=net
+no-resolv
+no-hosts
+domain-needed
+bogus-priv
+cache-size=0
+pid-file=/run/agent-dns/dnsmasq.pid
+log-facility=-
+addn-hosts=/etc/agent-dns/hosts

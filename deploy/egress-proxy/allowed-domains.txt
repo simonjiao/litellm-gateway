@@ -1,0 +1,2 @@
+chatgpt.com
+auth.openai.com

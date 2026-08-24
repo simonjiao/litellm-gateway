@@ -18,6 +18,7 @@ Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
 
 - [系统设计](docs/design.md)
 - [部署设计](docs/deployment.md)
+- [Agent 出站策略](docs/egress-proxy.md)
 - [协议映射](docs/protocol-mapping.md)
 - [MCP Apps](docs/mcp-apps.md)
 

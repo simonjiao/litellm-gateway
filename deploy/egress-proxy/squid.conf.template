@@ -1,0 +1,42 @@
+http_port 3128
+visible_hostname egress-proxy
+pid_filename /run/squid/squid.pid
+
+# Keep model and authentication traffic out of Squid's object cache.
+cache deny all
+cache_mem 32 MB
+cache_store_log none
+pinger_enable off
+
+# Codex turns may legitimately run for up to one hour.
+connect_timeout 10 seconds
+request_timeout 65 minutes
+read_timeout 65 minutes
+shutdown_lifetime 5 seconds
+
+# Log connection metadata only. CONNECT payloads remain TLS encrypted.
+forwarded_for delete
+access_log stdio:/dev/stdout
+cache_log /dev/stderr
+logfile_rotate 0
+include /run/squid/upstream.conf
+
+acl sandbox_clients src @SANDBOX_CLIENT_CIDR@
+acl CONNECT method CONNECT
+acl TLS_port port 443
+acl allowed_domains dstdomain "/etc/squid/allowed-domains.txt"
+
+# Reject loopback, private, carrier-grade NAT, link-local, multicast, and
+# otherwise non-public destinations before evaluating the public allowlist.
+acl denied_ipv4 dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
+acl denied_ipv4 dst 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16
+acl denied_ipv4 dst 224.0.0.0/4 240.0.0.0/4
+acl denied_ipv6 dst ::/128 ::1/128 fc00::/7 fe80::/10 ff00::/8
+
+http_access deny !sandbox_clients
+http_access deny !CONNECT
+http_access deny !TLS_port
+http_access deny denied_ipv4
+http_access deny denied_ipv6
+http_access allow sandbox_clients CONNECT TLS_port allowed_domains
+http_access deny all

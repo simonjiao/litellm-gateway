@@ -102,6 +102,23 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 
 环境映射只说明满足接口要求的方式，不改变上面的权限和网络不变量。
 
+## Docker 参考部署
+
+仓库中的 `compose.yaml` 将 Gateway、Adapter 和 Sandbox Manager 作为独立 `runc` 服务部署，
+只发布 Gateway 端口。Manager 通过 Docker socket 创建 `runsc` Worker；该权限不能细分时，
+应使用专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、准备三个逻辑网络、启动
+DNS/策略代理和控制面，并按容器当前地址写入方向性规则：
+
+```bash
+cp .env.example .env
+bash scripts/run-stack.sh
+```
+
+默认复用 `$CODEX_HOME/auth.json`（未设置时为 `$HOME/.codex/auth.json`）。脚本将认证副本放入
+忽略版本控制的运行目录，并只读注入 Worker；不会把认证写入镜像。Docker Compose 重建
+Adapter，或 agent-dns、egress-proxy、内部服务重建后，必须重新应用网络策略；再次执行
+`run-stack.sh` 即可。
+
 ## 验收
 
 - 普通工作负载可通过服务名互通，并按部署策略访问外网。
