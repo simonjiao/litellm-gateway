@@ -4,7 +4,7 @@ import json
 
 import httpx
 import pytest
-from support import agent_host_for
+from support import sandbox_for
 
 from codex_responses_adapter.app import create_app
 from codex_responses_adapter.settings import Settings
@@ -19,7 +19,7 @@ def settings() -> Settings:
 
 @pytest.mark.asyncio
 async def test_non_streaming_and_previous_response(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -62,7 +62,7 @@ async def test_non_streaming_and_previous_response(settings: Settings) -> None:
 
 @pytest.mark.asyncio
 async def test_streaming_response(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -86,7 +86,7 @@ async def test_streaming_response(settings: Settings) -> None:
 
 @pytest.mark.asyncio
 async def test_rejects_unmapped_tools(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -107,7 +107,7 @@ async def test_rejects_unmapped_tools(settings: Settings) -> None:
 
 @pytest.mark.asyncio
 async def test_rejects_unenforced_parameters(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -139,7 +139,7 @@ async def test_rejects_unenforced_parameters(settings: Settings) -> None:
 
 @pytest.mark.asyncio
 async def test_streaming_validation_fails_before_sse_start(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -161,7 +161,7 @@ async def test_streaming_validation_fails_before_sse_start(settings: Settings) -
 
 @pytest.mark.asyncio
 async def test_invalid_json_returns_400(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -179,7 +179,7 @@ async def test_invalid_json_returns_400(settings: Settings) -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_requires_deployment_bearer_credential(settings: Settings) -> None:
-    app = create_app(settings, agent_host=agent_host_for(settings))
+    app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

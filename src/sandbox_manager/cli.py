@@ -3,11 +3,11 @@ from __future__ import annotations
 import uvicorn
 
 from .app import create_app
-from .settings import HostSettings
+from .settings import ManagerSettings
 
 
 def main() -> None:
-    settings = HostSettings()
+    settings = ManagerSettings()
     uvicorn.run(
         create_app(settings),
         host=settings.host,

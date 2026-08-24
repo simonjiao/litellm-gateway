@@ -25,15 +25,15 @@ dev = [
 
 [project.scripts]
 codex-responses-adapter = "codex_responses_adapter.cli:main"
-sandbox-agent-host = "sandbox_agent_host.cli:main"
-sandbox-agent-worker = "sandbox_agent_host.worker_cli:main"
+sandbox-manager = "sandbox_manager.cli:main"
+sandbox-worker = "sandbox_worker.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27,<2.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codex_responses_adapter", "src/sandbox_agent_host"]
+packages = ["src/codex_responses_adapter", "src/sandbox_manager", "src/sandbox_worker"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

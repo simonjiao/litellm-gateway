@@ -7,7 +7,7 @@ from .models import AgentEvent, AgentEventType
 
 
 class EventLog:
-    """Bounded, process-local worker event history with async subscribers."""
+    """Bounded, process-local Worker event history with async subscribers."""
 
     def __init__(self, max_history: int) -> None:
         self._events: deque[AgentEvent] = deque(maxlen=max_history)

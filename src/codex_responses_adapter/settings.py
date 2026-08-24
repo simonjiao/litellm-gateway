@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     port: int = Field(default=8090, ge=1, le=65535)
     api_key: str = Field(default="local-adapter-key", min_length=8)
 
-    agent_host_base_url: str = "http://127.0.0.1:8092"
-    agent_host_api_key: str = Field(default="local-sandbox-host-key", min_length=8)
+    sandbox_manager_base_url: str = "http://sandbox-manager:8092"
+    sandbox_manager_api_key: str = Field(default="local-sandbox-manager-key", min_length=8)
     agent_workspace: str = "/workspace"
 
     codex_model: str | None = None
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     request_timeout_seconds: float = Field(default=3600.0, gt=0)
     max_concurrent_executions: int = Field(default=8, ge=1)
+    sandbox_lease_renew_interval_seconds: float = Field(default=30.0, gt=0)
 
     mcp_apps_enabled: bool = True
     mcp_apps_public_base_url: str = "http://127.0.0.1:8090"
@@ -47,12 +48,12 @@ class Settings(BaseSettings):
     def normalize_public_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
 
-    @field_validator("agent_host_base_url")
+    @field_validator("sandbox_manager_base_url")
     @classmethod
-    def normalize_agent_host_base_url(cls, value: str) -> str:
+    def normalize_sandbox_manager_base_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
         if not value:
-            raise ValueError("CODEX_ADAPTER_AGENT_HOST_BASE_URL must not be empty")
+            raise ValueError("CODEX_ADAPTER_SANDBOX_MANAGER_BASE_URL must not be empty")
         return value
 
     @field_validator("agent_workspace")

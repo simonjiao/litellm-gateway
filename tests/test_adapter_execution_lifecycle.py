@@ -7,27 +7,27 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from support import InProcessAgentHost
+from support import InProcessSandbox
 
 from codex_responses_adapter.app import create_app
 from codex_responses_adapter.errors import UpstreamProtocolError
 from codex_responses_adapter.models import CreateResponseRequest
 from codex_responses_adapter.settings import Settings
-from sandbox_agent_host.models import AgentEvent
-from sandbox_agent_host.settings import WorkerSettings
+from sandbox_worker.models import AgentEvent
+from sandbox_worker.settings import WorkerSettings
 
 
-class FlakyEventSubscriptionHost(InProcessAgentHost):
+class FlakyEventSubscriptionSandbox(InProcessSandbox):
     def __init__(self, worker_settings: WorkerSettings) -> None:
         super().__init__(worker_settings)
         self.subscriptions = 0
 
-    async def events(self, execution_id: str, *, after: int) -> AsyncIterator[AgentEvent]:
+    async def events(self, sandbox_id: str, *, after: int) -> AsyncIterator[AgentEvent]:
         self.subscriptions += 1
-        async for event in super().events(execution_id, after=after):
+        async for event in super().events(sandbox_id, after=after):
             yield event
             if self.subscriptions == 1:
-                raise UpstreamProtocolError("temporary Agent Host SSE disconnect")
+                raise UpstreamProtocolError("temporary Worker SSE disconnect")
 
 
 def _settings() -> tuple[Settings, WorkerSettings]:
@@ -36,6 +36,7 @@ def _settings() -> tuple[Settings, WorkerSettings]:
         api_key="adapter-secret",
         request_timeout_seconds=5,
         mcp_apps_event_keepalive_seconds=0.05,
+        sandbox_lease_renew_interval_seconds=0.01,
     )
     worker = WorkerSettings(
         api_key="worker-secret",
@@ -50,8 +51,8 @@ def _settings() -> tuple[Settings, WorkerSettings]:
 @pytest.mark.asyncio
 async def test_stream_disconnect_only_unsubscribes_execution_continues() -> None:
     settings, worker_settings = _settings()
-    host = InProcessAgentHost(worker_settings)
-    app = create_app(settings, agent_host=host)
+    sandbox = InProcessSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
 
     async with app.router.lifespan_context(app):
         stream = await app.state.service.create_streaming(
@@ -70,14 +71,14 @@ async def test_stream_disconnect_only_unsubscribes_execution_continues() -> None
 
         assert response["status"] == "completed"
         assert response["output"][0]["content"][0]["text"] == "hello world"
-        assert host.terminated == []
+        assert sandbox.terminated == []
 
 
 @pytest.mark.asyncio
 async def test_previous_response_reuses_agent_session_sandbox() -> None:
     settings, worker_settings = _settings()
-    host = InProcessAgentHost(worker_settings)
-    app = create_app(settings, agent_host=host)
+    sandbox = InProcessSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
 
     async with app.router.lifespan_context(app):
         first = await app.state.service.create_non_streaming(
@@ -93,16 +94,31 @@ async def test_previous_response_reuses_agent_session_sandbox() -> None:
         first_record = await app.state.store.get(first["id"])
         second_record = await app.state.store.get(second["id"])
 
-        assert len(host.started) == 1
-        assert first_record.agent_execution_id == host.started[0]
-        assert second_record.agent_execution_id == first_record.agent_execution_id
+        assert len(sandbox.started) == 1
+        assert first_record.sandbox_id == sandbox.started[0]
+        assert second_record.sandbox_id == first_record.sandbox_id
+        assert first_record.sandbox_id in sandbox.renewed
+
+        thread_calls = [
+            params
+            for _, method, params in sandbox.rpc_calls
+            if method.startswith("thread/")
+        ]
+        assert all("sandbox" not in params for params in thread_calls)
+        turn_calls = [params for _, method, params in sandbox.rpc_calls if method == "turn/start"]
+        assert all(params["approvalPolicy"] == "never" for params in turn_calls)
+        assert all(
+            params["sandboxPolicy"]
+            == {"type": "externalSandbox", "networkAccess": "restricted"}
+            for params in turn_calls
+        )
 
 
 @pytest.mark.asyncio
 async def test_cancel_interrupts_turn_without_destroying_reusable_sandbox() -> None:
     settings, worker_settings = _settings()
-    host = InProcessAgentHost(worker_settings)
-    app = create_app(settings, agent_host=host)
+    sandbox = InProcessSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
 
     async with app.router.lifespan_context(app):
         stream = await app.state.service.create_streaming(
@@ -114,20 +130,22 @@ async def test_cancel_interrupts_turn_without_destroying_reusable_sandbox() -> N
         )
         created = await anext(stream)
         response_id = created["response"]["id"]
+        await asyncio.sleep(0.03)
+        assert sandbox.started[0] in sandbox.renewed
         await app.state.service.cancel(response_id)
         events = [event async for event in stream]
 
         assert events[-1]["type"] == "response.incomplete"
         assert (await app.state.service.retrieve(response_id))["status"] == "incomplete"
-        assert any(method == "turn/interrupt" for _, method, _ in host.rpc_calls)
-        assert host.terminated == []
+        assert any(method == "turn/interrupt" for _, method, _ in sandbox.rpc_calls)
+        assert sandbox.terminated == []
 
 
 @pytest.mark.asyncio
-async def test_adapter_reconnects_internal_host_events_without_public_stream_replay() -> None:
+async def test_adapter_reconnects_worker_events_without_public_stream_replay() -> None:
     settings, worker_settings = _settings()
-    host = FlakyEventSubscriptionHost(worker_settings)
-    app = create_app(settings, agent_host=host)
+    sandbox = FlakyEventSubscriptionSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
 
     async with app.router.lifespan_context(app):
         response = await app.state.service.create_non_streaming(
@@ -135,4 +153,4 @@ async def test_adapter_reconnects_internal_host_events_without_public_stream_rep
         )
         assert response["status"] == "completed"
         assert response["output"][0]["content"][0]["text"] == "hello world"
-        assert host.subscriptions == 2
+        assert sandbox.subscriptions == 2

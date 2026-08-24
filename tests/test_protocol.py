@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from sandbox_agent_host.codex_protocol import CodexAppServerSession
-from sandbox_agent_host.settings import WorkerSettings
+from sandbox_worker.codex_protocol import CodexAppServerSession
+from sandbox_worker.settings import WorkerSettings
 
 
 @pytest.mark.asyncio

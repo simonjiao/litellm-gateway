@@ -166,7 +166,7 @@ def create_worker_app(
             await worker_runtime.close()
 
     app = FastAPI(
-        title="Sandbox Agent Worker",
+        title="Sandbox Worker",
         version="0.3.0",
         lifespan=lifespan,
     )

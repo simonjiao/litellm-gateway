@@ -43,7 +43,7 @@ class CodexRpcError(CodexProtocolError):
 
 
 class CodexAppServerSession:
-    """One initialized Codex app-server JSONL session, owned by Host Worker."""
+    """One initialized Codex app-server JSONL session, owned by a Sandbox Worker."""
 
     def __init__(
         self,

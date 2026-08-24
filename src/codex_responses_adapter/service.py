@@ -7,9 +7,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from sandbox_agent_host.models import AgentEvent
+from sandbox_worker.models import AgentEvent
 
-from .agent_host import AgentExecutionClient
 from .errors import InvalidRequestError, ResponseConflictError, UpstreamProtocolError
 from .events import ResponsesEventBuilder, mcp_app_side_event
 from .input_mapping import MappedInput, map_responses_input
@@ -20,6 +19,7 @@ from .mcp_apps import (
     ResolveInteractionRequest,
 )
 from .models import CreateResponseRequest, ResponseRecord
+from .sandbox import SandboxClient, SandboxUnavailableError
 from .settings import Settings
 from .store import ActiveExecution, ResponseStore
 
@@ -43,18 +43,18 @@ class CodexResponsesService:
         settings: Settings,
         store: ResponseStore,
         mcp_apps: McpAppsState,
-        agent_host: AgentExecutionClient,
+        sandbox_client: SandboxClient,
     ) -> None:
         self._settings = settings
         self._store = store
         self._mcp_apps = mcp_apps
-        self._agent_host = agent_host
+        self._sandbox = sandbox_client
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_executions)
 
     async def create_non_streaming(self, request: CreateResponseRequest) -> dict[str, Any]:
         prepared, _ = await self._start(request, subscribe=False)
         # The HTTP request is only a waiter. Cancelling it must not cancel the Agent
-        # execution owned by Sandbox Agent Host.
+        # execution owned by its Sandbox Worker.
         await asyncio.shield(prepared.active.terminal.wait())
         if prepared.active.driver_error is not None and not prepared.active.cancel_requested:
             raise prepared.active.driver_error
@@ -83,7 +83,7 @@ class CodexResponsesService:
                 yield event
         finally:
             # An SSE disconnect removes one subscriber only. The independent driver
-            # keeps consuming Agent Host events and updating Response state.
+            # keeps consuming Worker events and updating Response state.
             await active.unsubscribe(queue)
 
     async def retrieve(self, response_id: str) -> dict[str, Any]:
@@ -97,8 +97,8 @@ class CodexResponsesService:
             return record.to_response()
         active.cancel_requested = True
         try:
-            await self._agent_host.rpc(
-                active.agent_execution_id,
+            await self._sandbox.rpc(
+                active.sandbox_id,
                 "turn/interrupt",
                 {"threadId": active.thread_id, "turnId": active.turn_id},
             )
@@ -106,11 +106,11 @@ class CodexResponsesService:
             logger.warning(
                 "Codex interrupt failed for %s; terminating sandbox %s",
                 response_id,
-                active.agent_execution_id,
+                active.sandbox_id,
                 exc_info=True,
             )
             with suppress(Exception):
-                await self._agent_host.terminate_execution(active.agent_execution_id)
+                await self._sandbox.terminate_sandbox(active.sandbox_id)
         return record.to_response()
 
     async def delete(self, response_id: str) -> dict[str, Any]:
@@ -204,7 +204,7 @@ class CodexResponsesService:
             resource_uri=uri,
             connector_id=connector_id,
         )
-        execution_id = self._execution_id(record)
+        sandbox_id = await self._renew_available_sandbox(record)
         params: dict[str, Any] = {
             "threadId": self._thread_id(record),
             "server": server,
@@ -213,7 +213,7 @@ class CodexResponsesService:
         }
         if connector_id:
             params["connectorId"] = connector_id
-        result = await self._agent_host.rpc(execution_id, "mcpServer/resource/read", params)
+        result = await self._sandbox.rpc(sandbox_id, "mcpServer/resource/read", params)
         if not isinstance(result, dict):
             raise UpstreamProtocolError(
                 "Codex app-server returned an invalid MCP resource response",
@@ -248,9 +248,8 @@ class CodexResponsesService:
             params["arguments"] = request.arguments
         if request.meta is not None:
             params["_meta"] = request.meta
-        result = await self._agent_host.rpc(
-            self._execution_id(record), "mcpServer/tool/call", params
-        )
+        sandbox_id = await self._renew_available_sandbox(record)
+        result = await self._sandbox.rpc(sandbox_id, "mcpServer/tool/call", params)
         if not isinstance(result, dict):
             raise UpstreamProtocolError(
                 "Codex app-server returned an invalid MCP tool response",
@@ -267,7 +266,7 @@ class CodexResponsesService:
         for task in tasks:
             with suppress(asyncio.CancelledError, Exception):
                 await task
-        await self._agent_host.aclose()
+        await self._sandbox.aclose()
 
     async def _start(
         self,
@@ -280,7 +279,7 @@ class CodexResponsesService:
     ]:
         self._validate_request(request)
         await self._semaphore.acquire()
-        created_execution_id: str | None = None
+        created_sandbox_id: str | None = None
         try:
             mapped = map_responses_input(request.input, request.instructions)
             record = ResponseRecord.create(
@@ -297,36 +296,42 @@ class CodexResponsesService:
                         "previous_response_id is still in progress.",
                         code="previous_response_in_progress",
                     )
-                if not previous.agent_execution_id:
+                if not previous.sandbox_id:
                     raise InvalidRequestError(
-                        "previous_response_id has no Agent Session sandbox mapping",
+                        "previous_response_id has no Sandbox mapping",
                         param="previous_response_id",
                     )
                 try:
-                    execution = await self._agent_host.inspect_execution(
-                        previous.agent_execution_id
-                    )
-                except UpstreamProtocolError as exc:
+                    sandbox = await self._sandbox.inspect_sandbox(previous.sandbox_id)
+                    if sandbox.status != "running" or sandbox.worker is None:
+                        raise SandboxUnavailableError("Sandbox is not running")
+                    sandbox = await self._sandbox.renew_sandbox(previous.sandbox_id)
+                except (SandboxUnavailableError, UpstreamProtocolError) as exc:
                     raise ResponseConflictError(
-                        "The Agent Session sandbox for previous_response_id is unavailable.",
-                        code="agent_session_unavailable",
+                        "The Sandbox for previous_response_id is unavailable.",
+                        code="sandbox_unavailable",
                     ) from exc
-                if execution.status != "running":
+                if sandbox.status != "running" or sandbox.worker is None:
                     raise ResponseConflictError(
-                        "The Agent Session sandbox for previous_response_id is not running.",
-                        code="agent_session_unavailable",
+                        "The Sandbox for previous_response_id is unavailable.",
+                        code="sandbox_unavailable",
                     )
             else:
-                execution = await self._agent_host.start_execution()
-                created_execution_id = execution.id
+                sandbox = await self._sandbox.create_sandbox()
+                created_sandbox_id = sandbox.id
 
-            record.agent_execution_id = execution.id
+            record.sandbox_id = sandbox.id
             thread_id = await self._start_or_continue_thread(
-                execution.id, request, mapped, previous
+                sandbox.id, request, mapped, previous
             )
             turn_params: dict[str, Any] = {
                 "threadId": thread_id,
                 "input": mapped.user_inputs,
+                "approvalPolicy": "never",
+                "sandboxPolicy": {
+                    "type": "externalSandbox",
+                    "networkAccess": "restricted",
+                },
             }
             if isinstance(request.reasoning, dict):
                 effort = request.reasoning.get("effort")
@@ -337,7 +342,8 @@ class CodexResponsesService:
                     turn_params["summary"] = summary
             if request.service_tier:
                 turn_params["serviceTier"] = request.service_tier
-            turn_result = await self._agent_host.rpc(execution.id, "turn/start", turn_params)
+            event_cursor = await self._sandbox.event_cursor(sandbox.id)
+            turn_result = await self._sandbox.rpc(sandbox.id, "turn/start", turn_params)
             turn = turn_result.get("turn") if isinstance(turn_result, dict) else None
             turn_id = turn.get("id") if isinstance(turn, dict) else None
             if not isinstance(turn_id, str) or not turn_id:
@@ -350,10 +356,10 @@ class CodexResponsesService:
             record.turn_id = turn_id
             active = ActiveExecution(
                 response_id=record.id,
-                agent_execution_id=execution.id,
+                sandbox_id=sandbox.id,
                 thread_id=thread_id,
                 turn_id=turn_id,
-                event_cursor=execution.last_event_id,
+                event_cursor=event_cursor,
             )
             builder = ResponsesEventBuilder(record)
             prepared = PreparedExecution(record=record, active=active, builder=builder)
@@ -367,24 +373,30 @@ class CodexResponsesService:
             )
             return prepared, queue
         except BaseException:
-            if created_execution_id is not None:
+            if created_sandbox_id is not None:
                 with suppress(Exception):
-                    await self._agent_host.terminate_execution(created_execution_id)
+                    await self._sandbox.terminate_sandbox(created_sandbox_id)
             self._semaphore.release()
             raise
 
     async def _drive(self, prepared: PreparedExecution) -> None:
         active = prepared.active
         builder = prepared.builder
+        lease_task = asyncio.create_task(
+            self._maintain_sandbox_lease(active),
+            name=f"sandbox-lease-{active.sandbox_id}",
+        )
         reconnect_deadline = (
             asyncio.get_running_loop().time() + self._settings.request_timeout_seconds
         )
         try:
             while not builder.terminal:
                 try:
-                    async for event in self._agent_host.events(
-                        active.agent_execution_id, after=active.event_cursor
+                    async for event in self._sandbox.events(
+                        active.sandbox_id, after=active.event_cursor
                     ):
+                        if active.lease_error is not None:
+                            raise active.lease_error
                         if event.id > active.event_cursor + 1:
                             raise _TerminalAgentExecutionError(
                                 "Sandbox worker event history has a gap"
@@ -404,19 +416,22 @@ class CodexResponsesService:
                         if builder.terminal:
                             return
                     raise UpstreamProtocolError(
-                        "Sandbox Agent Host event stream ended before the turn completed"
+                        "Sandbox Worker event stream ended before the turn completed"
                     )
                 except _TerminalAgentExecutionError:
                     raise
                 except UpstreamProtocolError:
+                    if active.lease_error is not None:
+                        raise active.lease_error from None
                     if (
                         active.cancel_requested
                         or asyncio.get_running_loop().time() >= reconnect_deadline
                     ):
                         raise
-                    execution = await self._agent_host.inspect_execution(active.agent_execution_id)
-                    if execution.status != "running":
+                    sandbox = await self._sandbox.inspect_sandbox(active.sandbox_id)
+                    if sandbox.status != "running" or sandbox.worker is None:
                         raise
+                    await self._sandbox.renew_sandbox(active.sandbox_id)
                     await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             raise
@@ -428,7 +443,24 @@ class CodexResponsesService:
                 events = builder.fail(_safe_error_message(exc))
             await self._publish_response_events(prepared, events)
         finally:
+            lease_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await lease_task
             await self._cleanup(prepared)
+
+    async def _maintain_sandbox_lease(self, active: ActiveExecution) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._settings.sandbox_lease_renew_interval_seconds)
+                sandbox = await self._sandbox.renew_sandbox(active.sandbox_id)
+                if sandbox.status != "running" or sandbox.worker is None:
+                    raise SandboxUnavailableError(
+                        f"Sandbox '{active.sandbox_id}' is unavailable"
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            active.lease_error = exc
 
     async def _handle_agent_server_request(
         self,
@@ -445,8 +477,8 @@ class CodexResponsesService:
             )
         request_params = params if isinstance(params, dict) else {}
         if not _belongs_to_execution({"params": request_params}, active):
-            await self._agent_host.resolve_server_request(
-                active.agent_execution_id,
+            await self._sandbox.resolve_server_request(
+                active.sandbox_id,
                 request_id,
                 result=None,
                 error={
@@ -458,15 +490,15 @@ class CodexResponsesService:
         try:
             result = await self._handle_server_request(prepared.record, method, request_params)
         except Exception as exc:
-            await self._agent_host.resolve_server_request(
-                active.agent_execution_id,
+            await self._sandbox.resolve_server_request(
+                active.sandbox_id,
                 request_id,
                 result=None,
                 error={"code": -32000, "message": _safe_error_message(exc)},
             )
             return
-        await self._agent_host.resolve_server_request(
-            active.agent_execution_id,
+        await self._sandbox.resolve_server_request(
+            active.sandbox_id,
             request_id,
             result=result,
             error=None,
@@ -537,7 +569,7 @@ class CodexResponsesService:
                     "previous_response_id does not reference a Codex thread turn",
                     param="previous_response_id",
                 )
-            result = await self._agent_host.rpc(
+            result = await self._sandbox.rpc(
                 execution_id,
                 "thread/fork",
                 {
@@ -548,7 +580,7 @@ class CodexResponsesService:
                 },
             )
         else:
-            result = await self._agent_host.rpc(
+            result = await self._sandbox.rpc(
                 execution_id,
                 "thread/start",
                 {**common, "ephemeral": self._settings.codex_ephemeral_threads},
@@ -572,7 +604,6 @@ class CodexResponsesService:
         common: dict[str, Any] = {
             "cwd": self._settings.agent_workspace,
             "approvalPolicy": "never",
-            "sandbox": "workspace-write",
         }
         if self._settings.codex_model:
             common["model"] = self._settings.codex_model
@@ -636,8 +667,8 @@ class CodexResponsesService:
         if not isinstance(app_id, str) or not app_id:
             return []
         try:
-            result = await self._agent_host.rpc(
-                prepared.active.agent_execution_id,
+            result = await self._sandbox.rpc(
+                prepared.active.sandbox_id,
                 "app/read",
                 {
                     "appIds": [app_id],
@@ -737,14 +768,30 @@ class CodexResponsesService:
                     code="mcp_app_tool_not_allowed",
                 )
 
-    @staticmethod
-    def _execution_id(record: ResponseRecord) -> str:
-        if not record.agent_execution_id:
+    async def _renew_available_sandbox(self, record: ResponseRecord) -> str:
+        sandbox_id = self._sandbox_id(record)
+        try:
+            sandbox = await self._sandbox.inspect_sandbox(sandbox_id)
+            if sandbox.status != "running" or sandbox.worker is None:
+                raise SandboxUnavailableError(f"Sandbox '{sandbox_id}' is unavailable")
+            sandbox = await self._sandbox.renew_sandbox(sandbox_id)
+            if sandbox.status != "running" or sandbox.worker is None:
+                raise SandboxUnavailableError(f"Sandbox '{sandbox_id}' is unavailable")
+        except (SandboxUnavailableError, UpstreamProtocolError) as exc:
             raise ResponseConflictError(
-                "The Agent Session sandbox is unavailable.",
-                code="agent_session_unavailable",
+                "The Sandbox is unavailable.",
+                code="sandbox_unavailable",
+            ) from exc
+        return sandbox_id
+
+    @staticmethod
+    def _sandbox_id(record: ResponseRecord) -> str:
+        if not record.sandbox_id:
+            raise ResponseConflictError(
+                "The Sandbox is unavailable.",
+                code="sandbox_unavailable",
             )
-        return record.agent_execution_id
+        return record.sandbox_id
 
     @staticmethod
     def _thread_id(record: ResponseRecord) -> str:

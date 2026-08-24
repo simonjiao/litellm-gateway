@@ -8,8 +8,8 @@ from typing import Any
 import httpx
 import pytest
 
-from sandbox_agent_host.settings import WorkerSettings
-from sandbox_agent_host.worker import create_worker_app
+from sandbox_worker.app import create_worker_app
+from sandbox_worker.settings import WorkerSettings
 
 
 def _settings() -> WorkerSettings:

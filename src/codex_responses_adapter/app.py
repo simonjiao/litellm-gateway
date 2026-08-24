@@ -16,11 +16,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
-from .agent_host import AgentExecutionClient, HttpAgentExecutionClient
 from .csp import render_mcp_resource
 from .errors import AdapterError
 from .mcp_apps import McpAppsState, McpAppToolCallRequest, ResolveInteractionRequest
 from .models import CreateResponseRequest
+from .sandbox import HttpSandboxClient, SandboxClient
 from .service import CodexResponsesService
 from .settings import Settings
 from .store import ResponseStore
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     settings: Settings | None = None,
     *,
-    agent_host: AgentExecutionClient | None = None,
+    sandbox_client: SandboxClient | None = None,
 ) -> FastAPI:
     runtime_settings = settings or Settings()
 
@@ -42,16 +42,16 @@ def create_app(
         app.state.mcp_apps = McpAppsState(
             max_event_history=runtime_settings.mcp_apps_max_event_history
         )
-        app.state.agent_host = agent_host or HttpAgentExecutionClient(
-            runtime_settings.agent_host_base_url,
-            runtime_settings.agent_host_api_key,
+        app.state.sandbox_client = sandbox_client or HttpSandboxClient(
+            runtime_settings.sandbox_manager_base_url,
+            runtime_settings.sandbox_manager_api_key,
             timeout_seconds=runtime_settings.request_timeout_seconds,
         )
         app.state.service = CodexResponsesService(
             runtime_settings,
             app.state.store,
             app.state.mcp_apps,
-            app.state.agent_host,
+            app.state.sandbox_client,
         )
         try:
             yield
@@ -59,7 +59,7 @@ def create_app(
             await app.state.service.shutdown()
 
     app = FastAPI(
-        title="Codex app-server Responses Adapter",
+        title="Responses Adapter",
         version="0.3.0",
         lifespan=lifespan,
     )

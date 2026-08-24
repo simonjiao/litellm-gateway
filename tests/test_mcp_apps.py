@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 import pytest
-from support import agent_host_for
+from support import sandbox_for
 
 from codex_responses_adapter.app import create_app
 from codex_responses_adapter.mcp_apps import ResolveInteractionRequest
@@ -20,6 +20,7 @@ def mcp_settings() -> Settings:
         mcp_apps_interaction_timeout_seconds=5,
         mcp_apps_event_keepalive_seconds=0.05,
         mcp_apps_public_base_url="https://adapter.example",
+        mcp_apps_enabled=True,
     )
 
 
@@ -37,7 +38,7 @@ async def _wait_for_interaction(app: Any, response_id: str) -> dict[str, Any]:
 async def test_mcp_app_interaction_resource_and_tool_bridge(
     mcp_settings: Settings,
 ) -> None:
-    app = create_app(mcp_settings, agent_host=agent_host_for(mcp_settings))
+    app = create_app(mcp_settings, sandbox_client=sandbox_for(mcp_settings))
     async with app.router.lifespan_context(app):
         service = app.state.service
         request = CreateResponseRequest(
@@ -174,7 +175,7 @@ async def test_mcp_app_interaction_resource_and_tool_bridge(
 async def test_non_streaming_mcp_app_elicitation_fails_closed(
     mcp_settings: Settings,
 ) -> None:
-    app = create_app(mcp_settings, agent_host=agent_host_for(mcp_settings))
+    app = create_app(mcp_settings, sandbox_client=sandbox_for(mcp_settings))
     async with app.router.lifespan_context(app):
         response = await asyncio.wait_for(
             app.state.service.create_non_streaming(

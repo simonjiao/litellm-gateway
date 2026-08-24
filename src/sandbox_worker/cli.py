@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import uvicorn
 
+from .app import create_worker_app
 from .settings import WorkerSettings
-from .worker import create_worker_app
 
 
 def main() -> None:

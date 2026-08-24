@@ -45,7 +45,7 @@ class ResponseRecord:
     reasoning: dict[str, Any] | None
     service_tier: str | None
     mcp_apps_base_url: str
-    agent_execution_id: str | None = None
+    sandbox_id: str | None = None
     thread_id: str | None = None
     turn_id: str | None = None
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex}")

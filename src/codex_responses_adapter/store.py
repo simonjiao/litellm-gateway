@@ -11,12 +11,13 @@ from .models import ResponseRecord
 @dataclass(slots=True)
 class ActiveExecution:
     response_id: str
-    agent_execution_id: str
+    sandbox_id: str
     thread_id: str
     turn_id: str
     event_cursor: int
     cancel_requested: bool = False
     driver_error: Exception | None = None
+    lease_error: Exception | None = None
     task: asyncio.Task[None] | None = None
     _terminal: asyncio.Event = field(init=False, repr=False)
     _subscribers: set[asyncio.Queue[dict[str, Any] | None]] = field(init=False, repr=False)
