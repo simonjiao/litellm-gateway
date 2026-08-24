@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import docker
+from docker.errors import NotFound
 
 from .backend import SandboxBackendError, SandboxNotFoundError
-from .models import SandboxInfo, WorkerConnection
+from .models import SandboxInfo, SandboxStatus, WorkerConnection
 from .settings import ManagerSettings
 
 logger = logging.getLogger(__name__)
@@ -121,7 +122,7 @@ class DockerSandboxBackend:
             if self._docker is None:
                 self._docker = await asyncio.to_thread(docker.from_env)
             await self._validate_docker()
-            await self._recover_managed_containers()
+            await self._discard_managed_containers()
             self._reaper_task = asyncio.create_task(
                 self._reaper(), name="sandbox-manager-reaper"
             )
@@ -196,10 +197,10 @@ class DockerSandboxBackend:
 
     async def terminate(self, sandbox_id: str) -> SandboxInfo:
         record = await self._get(sandbox_id)
+        await self._remove_container(record.container, sandbox_id)
         async with self._lock:
-            self._records.pop(sandbox_id, None)
-        with suppress(Exception):
-            await asyncio.to_thread(record.container.remove, force=True, v=True)
+            if self._records.get(sandbox_id) is record:
+                self._records.pop(sandbox_id)
         await self._remove_volumes(sandbox_id)
         return SandboxInfo(
             id=sandbox_id,
@@ -279,7 +280,7 @@ class DockerSandboxBackend:
             f"Sandbox worker did not become ready: health={last_health}"
         )
 
-    async def _recover_managed_containers(self) -> None:
+    async def _discard_managed_containers(self) -> None:
         containers = await asyncio.to_thread(
             self._docker.containers.list,
             all=True,
@@ -288,32 +289,24 @@ class DockerSandboxBackend:
         for container in containers:
             labels = container.labels or {}
             sandbox_id = labels.get(SANDBOX_LABEL)
-            worker_host = labels.get(WORKER_HOST_LABEL)
-            if not isinstance(sandbox_id, str) or not sandbox_id.startswith("sandbox_"):
-                continue
-            if not isinstance(worker_host, str) or not worker_host:
-                await self._discard_container(container, sandbox_id)
-                continue
-            status = await self._status(container)
-            networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
-            attached = set(networks) if isinstance(networks, dict) else set()
-            required = {self._settings.rpc_network, self._settings.egress_network}
-            if status != "running" or not required.issubset(attached):
-                await self._discard_container(container, sandbox_id)
-                continue
-            now = int(time.time())
-            self._records[sandbox_id] = _SandboxRecord(
-                sandbox_id=sandbox_id,
-                container=container,
-                worker_host=worker_host,
-                created_at=_int_or(labels.get(CREATED_LABEL), now),
-                expires_at=now + self._settings.execution_ttl_seconds,
+            valid_sandbox_id = (
+                sandbox_id
+                if isinstance(sandbox_id, str) and sandbox_id.startswith("sandbox_")
+                else None
             )
+            await self._remove_container(container, valid_sandbox_id)
+            if valid_sandbox_id is not None:
+                await self._remove_volumes(valid_sandbox_id)
 
-    async def _discard_container(self, container: Any, sandbox_id: str) -> None:
-        with suppress(Exception):
+    @staticmethod
+    async def _remove_container(container: Any, sandbox_id: str | None) -> None:
+        try:
             await asyncio.to_thread(container.remove, force=True, v=True)
-        await self._remove_volumes(sandbox_id)
+        except NotFound:
+            return
+        except Exception as exc:
+            identity = f" Sandbox '{sandbox_id}'" if sandbox_id is not None else " managed Sandbox"
+            raise SandboxBackendError(f"Failed to remove{identity}: {exc}") from exc
 
     async def _get(self, sandbox_id: str) -> _SandboxRecord:
         async with self._lock:
@@ -323,7 +316,7 @@ class DockerSandboxBackend:
         return record
 
     @staticmethod
-    async def _status(container: Any) -> str:
+    async def _status(container: Any) -> SandboxStatus:
         await asyncio.to_thread(container.reload)
         if str(container.status) != "running" or _health_status(container) != "healthy":
             return "failed"
@@ -346,7 +339,7 @@ class DockerSandboxBackend:
                 except Exception:
                     logger.exception("Failed to reap sandbox %s", sandbox_id)
 
-    def _info(self, record: _SandboxRecord, status: str) -> SandboxInfo:
+    def _info(self, record: _SandboxRecord, status: SandboxStatus) -> SandboxInfo:
         worker = None
         if status == "running":
             worker = WorkerConnection(
@@ -355,7 +348,7 @@ class DockerSandboxBackend:
             )
         return SandboxInfo(
             id=record.sandbox_id,
-            status=status,  # type: ignore[arg-type]
+            status=status,
             created_at=record.created_at,
             expires_at=record.expires_at,
             worker=worker,
@@ -383,10 +376,3 @@ def _workspace_volume(sandbox_id: str) -> str:
 
 def _runtime_state_volume(sandbox_id: str) -> str:
     return f"sandbox-runtime-{sandbox_id}"
-
-
-def _int_or(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default

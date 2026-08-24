@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 
-from .auth import valid_bearer
+from sandbox_api import install_bearer_auth
+
 from .backend import SandboxBackend, SandboxBackendError, SandboxNotFoundError
 from .models import SandboxInfo
 from .settings import ManagerSettings
@@ -41,18 +41,7 @@ def create_app(
             await sandbox_backend.shutdown()
 
     app = FastAPI(title="Sandbox Manager", version="0.3.0", lifespan=lifespan)
-
-    @app.middleware("http")
-    async def authenticate(request: Request, call_next: Any) -> Response:
-        if request.url.path != "/healthz" and not valid_bearer(
-            request.headers.get("authorization"), runtime_settings.api_key
-        ):
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"message": "Unauthorized", "code": "unauthorized"}},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return await call_next(request)
+    install_bearer_auth(app, runtime_settings.api_key)
 
     @app.exception_handler(SandboxNotFoundError)
     async def not_found(_: Request, exc: SandboxNotFoundError) -> JSONResponse:

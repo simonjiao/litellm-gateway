@@ -252,6 +252,8 @@ def main() -> None:
             )
         elif method == "initialized":
             continue
+        elif method == "test/exit":
+            raise SystemExit(23)
         elif method in {"thread/start", "thread/fork"} and isinstance(request_id, (int, str)):
             thread_id = f"thread_{uuid.uuid4().hex[:8]}"
             result(

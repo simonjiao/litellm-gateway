@@ -12,7 +12,8 @@ from typing import Any
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .auth import valid_bearer
+from sandbox_api import install_bearer_auth
+
 from .codex_protocol import CodexAppServerSession, CodexProtocolError, RequestId
 from .event_log import EventLog
 from .models import AgentEvent, ResolveServerRequestBody, RpcRequest
@@ -34,7 +35,12 @@ class WorkerRuntime:
         )
         self._pump_task: asyncio.Task[None] | None = None
         self._pending_server_requests: dict[str, asyncio.Future[Any]] = {}
+        self._failure_message: str | None = None
         self._closed = False
+
+    @property
+    def healthy(self) -> bool:
+        return not self._closed and self._failure_message is None
 
     async def start(self) -> None:
         await self._session.start()
@@ -111,9 +117,10 @@ class WorkerRuntime:
             raise
         except Exception as exc:
             logger.exception("Sandbox worker app-server notification pump failed")
+            self._failure_message = _safe_message(exc)
             await self.events.publish(
                 "session_failed",
-                {"message": _safe_message(exc)},
+                {"message": self._failure_message},
             )
             await self.events.close()
 
@@ -170,18 +177,7 @@ def create_worker_app(
         version="0.3.0",
         lifespan=lifespan,
     )
-
-    @app.middleware("http")
-    async def authenticate(request: Request, call_next: Any) -> Response:
-        if request.url.path != "/healthz" and not valid_bearer(
-            request.headers.get("authorization"), runtime_settings.api_key
-        ):
-            return JSONResponse(
-                status_code=401,
-                content={"error": {"message": "Unauthorized", "code": "unauthorized"}},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return await call_next(request)
+    install_bearer_auth(app, runtime_settings.api_key)
 
     @app.exception_handler(CodexProtocolError)
     async def protocol_error_handler(_: Request, exc: CodexProtocolError) -> JSONResponse:
@@ -196,8 +192,12 @@ def create_worker_app(
         )
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, object]:
-        return {"status": "ok", "last_event_id": worker_runtime.events.last_event_id}
+    async def healthz() -> JSONResponse:
+        body: dict[str, object] = {
+            "status": "ok" if worker_runtime.healthy else "failed",
+            "last_event_id": worker_runtime.events.last_event_id,
+        }
+        return JSONResponse(status_code=200 if worker_runtime.healthy else 503, content=body)
 
     @app.post("/v1/rpc")
     async def rpc(body: RpcRequest) -> dict[str, Any]:

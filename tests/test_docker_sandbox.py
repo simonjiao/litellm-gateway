@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from sandbox_manager.backend import SandboxBackendError
+from sandbox_manager.backend import SandboxBackendError, SandboxNotFoundError
 from sandbox_manager.docker_backend import DockerSandboxBackend, build_container_spec
 from sandbox_manager.settings import ManagerSettings
 
@@ -74,6 +74,7 @@ class _Resource:
         self.status = "running"
         self.labels: dict[str, str] = {}
         self.removed = False
+        self.remove_error: Exception | None = None
 
     def reload(self) -> None:
         return None
@@ -82,6 +83,8 @@ class _Resource:
         return b""
 
     def remove(self, **_: Any) -> None:
+        if self.remove_error is not None:
+            raise self.remove_error
         self.removed = True
 
 
@@ -111,6 +114,7 @@ class _Networks:
 class _Containers:
     def __init__(self) -> None:
         self.specs: list[dict[str, Any]] = []
+        self.created: list[_Resource] = []
 
     def run(self, _: str, **spec: Any) -> _Resource:
         self.specs.append(spec)
@@ -121,10 +125,11 @@ class _Containers:
             }
         )
         container.labels = dict(spec["labels"])
+        self.created.append(container)
         return container
 
     def list(self, **_: Any) -> list[_Resource]:
-        return []
+        return [container for container in self.created if not container.removed]
 
 
 class _Volumes:
@@ -187,6 +192,47 @@ async def test_manager_creates_dns_discovered_workers_with_independent_credentia
     assert first.worker.api_key != second.worker.api_key
     assert all(spec["network"] == "agent-rpc" for spec in docker_client.containers.specs)
     assert len(docker_client.networks.items["agent-egress"].connected) == 2
+
+
+@pytest.mark.asyncio
+async def test_manager_reports_termination_only_after_worker_removal() -> None:
+    docker_client = _Docker(runtimes=["runsc"])
+    backend = DockerSandboxBackend(_settings(), docker_client=docker_client)
+    await backend.startup()
+    sandbox = await backend.create()
+    container = docker_client.containers.created[0]
+    container.remove_error = RuntimeError("remove failed")
+
+    try:
+        with pytest.raises(SandboxBackendError, match="remove failed"):
+            await backend.terminate(sandbox.id)
+
+        assert (await backend.inspect(sandbox.id)).status == "running"
+
+        container.remove_error = None
+        terminated = await backend.terminate(sandbox.id)
+        assert terminated.status == "terminated"
+        assert container.removed is True
+    finally:
+        await backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manager_discards_workers_without_recoverable_lease_on_restart() -> None:
+    docker_client = _Docker(runtimes=["runsc"])
+    first_backend = DockerSandboxBackend(_settings(), docker_client=docker_client)
+    await first_backend.startup()
+    sandbox = await first_backend.create()
+    await first_backend.shutdown()
+
+    second_backend = DockerSandboxBackend(_settings(), docker_client=docker_client)
+    await second_backend.startup()
+    try:
+        assert docker_client.containers.created[0].removed is True
+        with pytest.raises(SandboxNotFoundError):
+            await second_backend.inspect(sandbox.id)
+    finally:
+        await second_backend.shutdown()
 
 
 @pytest.mark.asyncio

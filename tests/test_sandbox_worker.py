@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -174,3 +175,28 @@ async def test_worker_rejects_non_mcp_app_interactive_requests_at_boundary() -> 
             assert "test/approval-rejected" in methods
             assert "turn/completed" in methods
             assert all(event["type"] != "server_request" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_worker_health_fails_when_agent_runtime_exits() -> None:
+    app = create_worker_app(_settings())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://worker"
+        ) as client:
+            failed_rpc = await client.post(
+                "/v1/rpc",
+                headers={"Authorization": "Bearer worker-secret"},
+                json={"method": "test/exit", "params": {}},
+            )
+            assert failed_rpc.status_code == 502
+
+            health = await client.get("/healthz")
+            for _ in range(100):
+                if health.status_code == 503:
+                    break
+                await asyncio.sleep(0.01)
+                health = await client.get("/healthz")
+
+            assert health.status_code == 503
+            assert health.json()["status"] == "failed"
