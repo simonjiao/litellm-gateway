@@ -42,7 +42,8 @@ def test_worker_container_spec_enforces_runtime_filesystem_and_network_boundarie
 
     assert spec["runtime"] == "runsc"
     assert spec["network"] == "agent-rpc"
-    assert spec["network_aliases"] == ["sandbox-worker-abc"]
+    assert spec["name"] == "sandbox-worker-abc"
+    assert "network_aliases" not in spec
     assert "ports" not in spec
     assert "ip" not in spec
     assert spec["privileged"] is False

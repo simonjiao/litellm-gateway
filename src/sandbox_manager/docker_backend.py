@@ -82,7 +82,6 @@ def build_container_spec(
         "init": True,
         "runtime": settings.docker_runtime,
         "network": settings.rpc_network,
-        "network_aliases": [worker_host],
         "environment": environment,
         "volumes": volumes,
         "labels": {
