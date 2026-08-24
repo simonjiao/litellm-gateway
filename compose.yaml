@@ -5,7 +5,8 @@ x-control-plane: &control-plane
     context: .
     dockerfile: deploy/control-plane/Dockerfile
     args:
-      PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      PYPI_INDEX_URL: ${CONTROL_PLANE_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      LITELLM_INDEX_URL: ${CONTROL_PLANE_LITELLM_INDEX_URL:-https://pypi.org/simple}
   image: ${CONTROL_PLANE_IMAGE:-litellm-responses-control:0.3.0}
   runtime: runc
   restart: unless-stopped

@@ -82,3 +82,17 @@ def test_network_policy_has_a_non_sudo_runc_executor() -> None:
         assert "--runtime runc" in policy
         assert "--network host" in policy
         assert "--cap-add NET_ADMIN" in policy
+
+
+def test_control_plane_uses_domestic_registry_except_for_the_missing_litellm_rc() -> None:
+    compose = (ROOT / "compose.yaml").read_text()
+    dockerfile = (ROOT / "deploy" / "control-plane" / "Dockerfile").read_text()
+
+    assert "CONTROL_PLANE_PYPI_INDEX_URL" in compose
+    assert "ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile
+    assert "ARG LITELLM_INDEX_URL=https://pypi.org/simple" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
+    assert 'PIP_INDEX_URL="${LITELLM_INDEX_URL}"' in dockerfile
+    assert 'pip install --no-deps "litellm==${LITELLM_VERSION}"' in dockerfile
+    assert 'PIP_INDEX_URL="${PYPI_INDEX_URL}"' in dockerfile
+    assert "pip install ." in dockerfile
