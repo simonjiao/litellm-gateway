@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -89,22 +90,41 @@ class _Resource:
 
 
 class _Network(_Resource):
-    def __init__(self, name: str, *, internal: bool) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        internal: bool,
+        connect_error: Exception | None = None,
+    ) -> None:
         super().__init__({"Internal": internal})
         self.name = name
         self.connected: list[_Resource] = []
+        self.connect_error = connect_error
 
     def connect(self, container: _Resource) -> None:
+        if self.connect_error is not None:
+            raise self.connect_error
         self.connected.append(container)
         networks = container.attrs["NetworkSettings"]["Networks"]
         networks[self.name] = {}
 
 
 class _Networks:
-    def __init__(self, *, rpc_internal: bool, egress_internal: bool) -> None:
+    def __init__(
+        self,
+        *,
+        rpc_internal: bool,
+        egress_internal: bool,
+        egress_connect_error: Exception | None,
+    ) -> None:
         self.items = {
             "agent-rpc": _Network("agent-rpc", internal=rpc_internal),
-            "agent-egress": _Network("agent-egress", internal=egress_internal),
+            "agent-egress": _Network(
+                "agent-egress",
+                internal=egress_internal,
+                connect_error=egress_connect_error,
+            ),
         }
 
     def get(self, name: str) -> _Network:
@@ -112,9 +132,10 @@ class _Networks:
 
 
 class _Containers:
-    def __init__(self) -> None:
+    def __init__(self, *, remove_error: Exception | None) -> None:
         self.specs: list[dict[str, Any]] = []
         self.created: list[_Resource] = []
+        self.remove_error = remove_error
 
     def run(self, _: str, **spec: Any) -> _Resource:
         self.specs.append(spec)
@@ -125,6 +146,7 @@ class _Containers:
             }
         )
         container.labels = dict(spec["labels"])
+        container.remove_error = self.remove_error
         self.created.append(container)
         return container
 
@@ -157,13 +179,17 @@ class _Docker:
         runtimes: list[str],
         rpc_internal: bool = True,
         egress_internal: bool = True,
+        egress_connect_error: Exception | None = None,
+        container_remove_error: Exception | None = None,
     ) -> None:
         self._runtimes = runtimes
         self.networks = _Networks(
-            rpc_internal=rpc_internal, egress_internal=egress_internal
+            rpc_internal=rpc_internal,
+            egress_internal=egress_internal,
+            egress_connect_error=egress_connect_error,
         )
         self.images = _Collection()
-        self.containers = _Containers()
+        self.containers = _Containers(remove_error=container_remove_error)
         self.volumes = _Volumes()
 
     def info(self) -> dict[str, Any]:
@@ -233,6 +259,35 @@ async def test_manager_discards_workers_without_recoverable_lease_on_restart() -
             await second_backend.inspect(sandbox.id)
     finally:
         await second_backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manager_retries_worker_cleanup_after_creation_failure() -> None:
+    docker_client = _Docker(
+        runtimes=["runsc"],
+        egress_connect_error=RuntimeError("connect failed"),
+        container_remove_error=RuntimeError("remove failed"),
+    )
+    backend = DockerSandboxBackend(
+        _settings(reaper_interval_seconds=0.01),
+        docker_client=docker_client,
+    )
+    await backend.startup()
+
+    try:
+        with pytest.raises(SandboxBackendError, match="cleanup failed"):
+            await backend.create()
+
+        container = docker_client.containers.created[0]
+        assert container.removed is False
+        container.remove_error = None
+        for _ in range(100):
+            if container.removed:
+                break
+            await asyncio.sleep(0.01)
+        assert container.removed is True
+    finally:
+        await backend.shutdown()
 
 
 @pytest.mark.asyncio

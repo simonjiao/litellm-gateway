@@ -151,9 +151,9 @@ class DockerSandboxBackend:
             worker_host=worker_host,
             worker_api_key=worker_api_key,
         )
-        await self._create_volumes(sandbox_id)
         container: Any = None
         try:
+            await self._create_volumes(sandbox_id)
             container = await asyncio.to_thread(
                 self._docker.containers.run,
                 self._settings.image,
@@ -175,10 +175,23 @@ class DockerSandboxBackend:
             async with self._lock:
                 self._records[sandbox_id] = record
             return self._info(record, "running")
-        except Exception:
+        except BaseException as creation_error:
             if container is not None:
-                with suppress(Exception):
-                    await asyncio.to_thread(container.remove, force=True, v=True)
+                try:
+                    await self._remove_container(container, sandbox_id)
+                except SandboxBackendError as cleanup_error:
+                    now = int(time.time())
+                    async with self._lock:
+                        self._records[sandbox_id] = _SandboxRecord(
+                            sandbox_id=sandbox_id,
+                            container=container,
+                            worker_host=worker_host,
+                            created_at=now,
+                            expires_at=now,
+                        )
+                    raise SandboxBackendError(
+                        f"Sandbox creation failed and Worker cleanup failed: {cleanup_error}"
+                    ) from creation_error
             await self._remove_volumes(sandbox_id)
             raise
 
