@@ -80,6 +80,7 @@ bash scripts/prepare-sandbox-network.sh
 bash scripts/build-sandbox-worker.sh
 bash scripts/build-egress-proxy.sh
 bash scripts/build-agent-dns.sh
+bash scripts/build-network-policy.sh
 docker compose build
 bash scripts/run-egress-proxy.sh
 bash scripts/run-agent-dns.sh

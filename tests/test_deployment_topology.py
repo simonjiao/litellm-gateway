@@ -72,3 +72,13 @@ def test_worker_image_uses_the_persisted_agent_home() -> None:
     dockerfile = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
 
     assert "HOME=/home/agent" in dockerfile
+
+
+def test_network_policy_has_a_non_sudo_runc_executor() -> None:
+    for script_name in ("apply-agent-rpc-policy.sh", "apply-agent-egress-policy.sh"):
+        policy = (ROOT / "scripts" / script_name).read_text()
+
+        assert "SANDBOX_NETWORK_POLICY_IMAGE" in policy
+        assert "--runtime runc" in policy
+        assert "--network host" in policy
+        assert "--cap-add NET_ADMIN" in policy

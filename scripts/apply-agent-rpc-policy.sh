@@ -12,6 +12,7 @@ fi
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 worker_port="${SANDBOX_MANAGER_WORKER_PORT:-8091}"
 policy_chain="LITELLM_AGENT_RPC"
+policy_image="${SANDBOX_NETWORK_POLICY_IMAGE:-litellm-network-policy:0.1.0}"
 
 adapter_container="$(docker compose ps -q responses-adapter)"
 if [[ -z "${adapter_container}" ]]; then
@@ -41,11 +42,25 @@ fi
 
 iptables_command=(iptables)
 if ((EUID != 0)); then
-  if ! sudo -n true >/dev/null 2>&1; then
-    echo "Applying the agent-rpc policy requires root or passwordless sudo." >&2
-    exit 1
+  if sudo -n true >/dev/null 2>&1; then
+    iptables_command=(sudo -n iptables)
+  else
+    if ! docker image inspect "${policy_image}" >/dev/null 2>&1; then
+      echo "Network policy image '${policy_image}' is missing; run build-network-policy.sh first." >&2
+      exit 1
+    fi
+    iptables_command=(
+      docker run --rm
+      --runtime runc
+      --network host
+      --read-only
+      --cap-drop ALL
+      --cap-add NET_ADMIN
+      --security-opt no-new-privileges:true
+      --tmpfs /run:rw,noexec,nosuid,nodev,size=1m
+      "${policy_image}"
+    )
   fi
-  iptables_command=(sudo -n iptables)
 fi
 
 if ! "${iptables_command[@]}" -nL DOCKER-USER >/dev/null 2>&1; then
