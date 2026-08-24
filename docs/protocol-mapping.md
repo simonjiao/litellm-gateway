@@ -1,6 +1,26 @@
 # Responses、Codex app-server 与 MCP Apps 协议映射
 
-Adapter 通过 AgentExecution Interface 与 Sandbox Agent Host 通信，Host Worker 驱动 `codex app-server`。该内部层只隔离执行生命周期，不改变 Responses 映射。
+本文描述当前 Codex Sandbox Worker 的实现级协议，不定义上层架构接口。
+
+Adapter 通过 Sandbox Manager 创建、查询、续租和销毁 Sandbox，并直接连接 Sandbox
+Worker 驱动 `codex app-server`。生命周期接口不承载 Agent RPC/SSE，也不改变 Responses
+映射。
+
+## Sandbox 执行策略
+
+当前 Worker 启动 Codex 会话时使用：
+
+```json
+{
+  "approvalPolicy": "never",
+  "sandboxPolicy": {
+    "type": "externalSandbox",
+    "networkAccess": "restricted"
+  }
+}
+```
+
+外层 `runsc` 和部署环境的网络策略负责强制隔离，Codex 不创建内层 Linux Sandbox。
 
 ## Responses 能力表
 
@@ -12,7 +32,7 @@ Adapter 通过 AgentExecution Interface 与 Sandbox Agent Host 通信，Host Wor
 | 输出 | Provider 相关 | 部分支持 | assistant message、output text、`mcp_call` |
 | 状态 | Provider 相关 | 部分支持 | `in_progress/completed/failed/incomplete` |
 | retrieve/cancel/delete/input-items | 有端点 | 支持 | LiteLLM 编码 Response ID 做后端亲和；Adapter 状态仅进程内 |
-| `previous_response_id` | 编码并路由 | 支持 | Adapter 映射为同一 Sandbox 内的 `thread/fork` |
+| `previous_response_id` | 编码并路由 | 支持 | 同一 Sandbox 内 `thread/fork`；Sandbox 过期时返回 `sandbox_unavailable` |
 | 客户端 `tools` | 可支持 | 不支持 | 非空显式拒绝；Codex 已配置 MCP 仍输出 `mcp_call` |
 | `background=true` | 可原生或 Redis polling | 不支持 | Gateway polling 显式关闭，Adapter 拒绝 |
 | `store=false` | Provider 相关 | 不支持 | Adapter 需要 Response/Thread/AppSession 映射 |
@@ -82,13 +102,13 @@ mcpToolCall.appContext
   → bind(response, origin call, app, server, resource, allowed tools)
 ```
 
-资源和 App 工具调用均复用原 AgentExecution 与 Thread：
+资源和 App 工具调用均复用原 Sandbox 与 Thread：
 
 ```text
 Open WebUI AppBridge
   → BFF
   → Adapter resource/read | tools/call
-  → Agent Host RPC
+  → Sandbox Worker RPC
   → app-server mcpServer/resource/read | mcpServer/tool/call
   → MCP Gateway
 ```
@@ -99,7 +119,7 @@ Elicitation 流程：
 
 ```text
 app-server mcpServer/elicitation/request
-  → Worker/Agent Host
+  → Sandbox Worker
   → Adapter side-event
   → Open WebUI UI
   → resolve {action, content, _meta}

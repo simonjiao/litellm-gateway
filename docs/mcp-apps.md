@@ -32,7 +32,8 @@ response_id + origin_call_id + app_id + server_id + resource_uri + allowed_tools
 
 `allowed_tools` 来自 app-server `app/read(includeTools=true)` 中 `isEnabled=true` 的 tool summary。资源读取和工具调用必须命中全部绑定字段；跨 Response、跨 Server、跨 resource 或未授权 tool 均拒绝。
 
-AppSession 在 Response 终态后保留，以便已渲染 UI 读取结果；删除 Response 或 Adapter 重启时清除。
+AppSession 在 Response 终态后保留，但不延长 Sandbox 租约。Sandbox 已回收时，资源和工具
+调用返回 `sandbox_unavailable`；删除 Response 或 Adapter 重启时清除 AppSession。
 
 ## 浏览器边界
 
@@ -41,6 +42,6 @@ AppSession 在 Response 终态后保留，以便已渲染 UI 读取结果；删�
 - 外部链接、消息、model context 与显示模式由 Open WebUI 回调明确处理；
 - 浏览器请求使用 BFF 同源 cookie/session，不携带 Adapter 部署密钥；
 - BFF 使用 Adapter Bearer 凭证代理 `_meta.mcp_app` 中的资源、state、events、resolve 与 tools/call URL；
-- 浏览器与 iframe 不直接访问 Adapter、Agent Host 或 MCP Gateway。
+- 浏览器与 iframe 不直接访问 Adapter、Sandbox Manager、Sandbox Worker 或 MCP Gateway。
 
 框架无关的 Host 实现位于 [`frontend/mcp-apps-host`](../frontend/mcp-apps-host)。
