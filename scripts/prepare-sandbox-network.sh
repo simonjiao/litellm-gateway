@@ -26,21 +26,31 @@ esac
 ensure_network() {
   local network_name="$1"
   local expected_internal="$2"
-  local actual_internal
+  local actual_internal actual_driver actual_scope actual_ipv6
 
   if docker network inspect "${network_name}" >/dev/null 2>&1; then
     actual_internal="$(docker network inspect --format '{{.Internal}}' "${network_name}")"
+    actual_driver="$(docker network inspect --format '{{.Driver}}' "${network_name}")"
+    actual_scope="$(docker network inspect --format '{{.Scope}}' "${network_name}")"
+    actual_ipv6="$(docker network inspect --format '{{.EnableIPv6}}' "${network_name}")"
     if [[ "${actual_internal}" != "${expected_internal}" ]]; then
       echo "Existing network '${network_name}' has internal=${actual_internal}; expected ${expected_internal}." >&2
+      exit 1
+    fi
+    if [[ "${actual_driver}" != "bridge" || "${actual_scope}" != "local" \
+      || "${actual_ipv6}" != "false" ]]; then
+      echo "Existing network '${network_name}' must be a local IPv4 bridge." >&2
       exit 1
     fi
     return
   fi
 
   if [[ "${expected_internal}" == "true" ]]; then
-    docker network create --internal "${network_name}" >/dev/null
+    docker network create --driver bridge --scope local --ipv6=false \
+      --internal "${network_name}" >/dev/null
   else
-    docker network create "${network_name}" >/dev/null
+    docker network create --driver bridge --scope local --ipv6=false \
+      "${network_name}" >/dev/null
   fi
 }
 

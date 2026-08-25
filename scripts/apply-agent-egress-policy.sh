@@ -84,6 +84,11 @@ input_has_active="${NETWORK_POLICY_DISPATCH_HAS_ACTIVE}"
 
 network_policy_iptables -A "${forward_policy_chain}" \
   -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+for non_worker_address in \
+  "${dns_address}" "${proxy_address}" "${internal_service_addresses[@]}"; do
+  network_policy_iptables -A "${forward_policy_chain}" \
+    -s "${non_worker_address}/32" -j DROP
+done
 network_policy_iptables -A "${forward_policy_chain}" \
   -o "${bridge_name}" -d "${dns_address}/32" -p udp --dport 53 \
   -m conntrack --ctstate NEW -j ACCEPT

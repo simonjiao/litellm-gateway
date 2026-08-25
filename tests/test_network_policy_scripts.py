@@ -70,6 +70,8 @@ exit 0
 case "$*" in
   "compose ps -q responses-adapter") printf '%s\\n' adapter-id ;;
   *"container inspect"*"missing"*) exit 1 ;;
+  *"container inspect"*"agent-dns"*) printf '%s\\n' 172.30.0.3 ;;
+  *"container inspect"*"egress-proxy"*) printf '%s\\n' 172.30.0.4 ;;
   *"container inspect"*) printf '%s\\n' 172.30.0.2 ;;
   *"com.docker.network.bridge.name"*) printf '%s\\n' '<no value>' ;;
   *"network inspect"*".Id"*) printf '%s\\n' 0123456789abcdef ;;
@@ -152,6 +154,21 @@ def test_egress_policy_validates_every_destination_before_mutating_firewall(
     assert result.returncode != 0
     mutating_operations = {"-N", "-F", "-A", "-I", "-R", "-D", "-X"}
     assert not any(command[0] in mutating_operations for command in commands)
+
+
+def test_egress_policy_prevents_known_non_worker_services_from_initiating(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_policy_script(tmp_path, "apply-agent-egress-policy.sh")
+
+    assert result.returncode == 0, result.stderr
+    source_drops = [
+        command
+        for command in commands
+        if "-s" in command and command[-2:] == ["-j", "DROP"]
+    ]
+    assert any("172.30.0.3/32" in command for command in source_drops)
+    assert any("172.30.0.4/32" in command for command in source_drops)
 
 
 @pytest.mark.parametrize(

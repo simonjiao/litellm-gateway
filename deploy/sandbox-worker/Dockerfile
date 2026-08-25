@@ -41,5 +41,5 @@ USER 10001:10001
 WORKDIR /workspace
 EXPOSE 8091
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=2)"
+  CMD python -c "import os, urllib.request; port=os.environ.get('SANDBOX_WORKER_PORT', '8091'); urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=2)"
 ENTRYPOINT ["sandbox-worker"]

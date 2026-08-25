@@ -22,7 +22,18 @@ def test_compose_deploys_control_plane_as_separate_runc_services() -> None:
     assert "ports" in gateway
     assert "ports" not in adapter
     assert "ports" not in manager
-    assert "/var/run/docker.sock:/var/run/docker.sock" in manager["volumes"]
+    assert manager["environment"]["DOCKER_HOST"] == "unix:///run/sandbox-engine/docker.sock"
+    assert any(
+        "SANDBOX_MANAGER_DOCKER_SOCKET" in volume
+        and volume.endswith(":/run/sandbox-engine/docker.sock")
+        for volume in manager["volumes"]
+    )
+
+
+def test_gateway_restart_is_gated_by_host_network_policy() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+
+    assert compose["services"]["gateway"]["restart"] == "no"
 
 
 def test_compose_uses_dns_and_contains_no_fixed_network_address() -> None:
@@ -72,6 +83,15 @@ def test_worker_image_uses_the_persisted_agent_home() -> None:
     dockerfile = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
 
     assert "HOME=/home/agent" in dockerfile
+
+
+def test_worker_port_is_shared_by_manager_policy_and_healthcheck() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    manager_environment = compose["services"]["sandbox-manager"]["environment"]
+    dockerfile = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
+
+    assert "SANDBOX_MANAGER_WORKER_PORT" in manager_environment
+    assert "SANDBOX_WORKER_PORT" in dockerfile
 
 
 def test_network_policy_has_a_non_sudo_runc_executor() -> None:
