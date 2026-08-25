@@ -79,7 +79,6 @@ def build_container_spec(
     return {
         "name": worker_host,
         "hostname": worker_host,
-        "detach": True,
         "init": True,
         "runtime": settings.docker_runtime,
         "network": settings.rpc_network,
@@ -155,7 +154,7 @@ class DockerSandboxBackend:
         try:
             await self._create_volumes(sandbox_id)
             container = await asyncio.to_thread(
-                self._docker.containers.run,
+                self._docker.containers.create,
                 self._settings.image,
                 **spec,
             )
@@ -163,6 +162,7 @@ class DockerSandboxBackend:
                 self._docker.networks.get, self._settings.egress_network
             )
             await asyncio.to_thread(egress_network.connect, container)
+            await asyncio.to_thread(container.start)
             await self._wait_for_worker(container)
             now = int(time.time())
             record = _SandboxRecord(

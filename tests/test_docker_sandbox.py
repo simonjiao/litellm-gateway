@@ -76,6 +76,7 @@ class _Resource:
         self.labels: dict[str, str] = {}
         self.removed = False
         self.remove_error: Exception | None = None
+        self.networks_at_start: set[str] | None = None
 
     def reload(self) -> None:
         return None
@@ -87,6 +88,9 @@ class _Resource:
         if self.remove_error is not None:
             raise self.remove_error
         self.removed = True
+
+    def start(self) -> None:
+        self.networks_at_start = set(self.attrs["NetworkSettings"]["Networks"])
 
 
 class _Network(_Resource):
@@ -137,7 +141,7 @@ class _Containers:
         self.created: list[_Resource] = []
         self.remove_error = remove_error
 
-    def run(self, _: str, **spec: Any) -> _Resource:
+    def create(self, _: str, **spec: Any) -> _Resource:
         self.specs.append(spec)
         container = _Resource(
             {
@@ -218,6 +222,10 @@ async def test_manager_creates_dns_discovered_workers_with_independent_credentia
     assert first.worker.api_key != second.worker.api_key
     assert all(spec["network"] == "agent-rpc" for spec in docker_client.containers.specs)
     assert len(docker_client.networks.items["agent-egress"].connected) == 2
+    assert all(
+        container.networks_at_start == {"agent-rpc", "agent-egress"}
+        for container in docker_client.containers.created
+    )
 
 
 @pytest.mark.asyncio
