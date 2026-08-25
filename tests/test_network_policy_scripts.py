@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_manager.docker_backend import build_container_spec
+from sandbox_manager.settings import ManagerSettings
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -200,6 +203,36 @@ def test_egress_policy_accepts_a_manager_owned_worker_member(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_egress_policy_identity_contract_matches_manager_and_smoke_workers(
+    tmp_path: Path,
+) -> None:
+    spec = build_container_spec(
+        ManagerSettings(),
+        "sandbox_policy_contract",
+        worker_host="sandbox-worker-policy-contract",
+        worker_api_key="worker-policy-contract-key",
+    )
+    labels = spec["labels"]
+    managed = str(labels.get("io.litellm-codex-gateway.managed", ""))
+    sandbox_id = str(labels.get("io.litellm-codex-gateway.sandbox-id", ""))
+
+    result, _ = _run_policy_script(
+        tmp_path,
+        "apply-agent-egress-policy.sh",
+        extra_env=(
+            "TEST_EGRESS_MEMBER=sandbox-worker-policy-contract\n"
+            f"TEST_EGRESS_MEMBER_MANAGED={managed}\n"
+            f"TEST_EGRESS_SANDBOX_ID={sandbox_id}\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    for script_name in ("check-egress-policy.sh", "check-agent-network-policy.sh"):
+        smoke = (ROOT / "scripts" / script_name).read_text()
+        assert "--label io.litellm-codex-gateway.managed=true" in smoke
+        assert "--label io.litellm-codex-gateway.sandbox-id=sandbox_" in smoke
 
 
 def test_egress_policy_prevents_known_non_worker_services_from_initiating(
