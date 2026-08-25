@@ -9,12 +9,20 @@ if [[ -f .env ]]; then
   set +a
 fi
 
+# shellcheck source=scripts/lib/network-policy.sh
+source scripts/lib/network-policy.sh
+
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 dns_container="${SANDBOX_AGENT_DNS_CONTAINER:-agent-dns}"
 proxy_container="${SANDBOX_EGRESS_PROXY_CONTAINER:-egress-proxy}"
 internal_services="${SANDBOX_AGENT_INTERNAL_SERVICES:-}"
-policy_chain="LITELLM_AGENT_EGRESS"
 policy_image="${SANDBOX_NETWORK_POLICY_IMAGE:-litellm-network-policy:0.1.0}"
+forward_dispatcher="LITELLM_AE_FWD"
+forward_chain_a="LITELLM_AE_F_A"
+forward_chain_b="LITELLM_AE_F_B"
+input_dispatcher="LITELLM_AE_INPUT"
+input_chain_a="LITELLM_AE_I_A"
+input_chain_b="LITELLM_AE_I_B"
 
 container_address() {
   local container_name="$1"
@@ -43,48 +51,8 @@ if [[ -z "${bridge_name}" || "${bridge_name}" == "<no value>" ]]; then
   bridge_name="br-${network_id:0:12}"
 fi
 
-iptables_command=(iptables)
-if ((EUID != 0)); then
-  if sudo -n true >/dev/null 2>&1; then
-    iptables_command=(sudo -n iptables)
-  else
-    if ! docker image inspect "${policy_image}" >/dev/null 2>&1; then
-      echo "Network policy image '${policy_image}' is missing; run build-network-policy.sh first." >&2
-      exit 1
-    fi
-    iptables_command=(
-      docker run --rm
-      --runtime runc
-      --network host
-      --read-only
-      --cap-drop ALL
-      --cap-add NET_ADMIN
-      --security-opt no-new-privileges:true
-      --tmpfs /run:rw,noexec,nosuid,nodev,size=1m
-      "${policy_image}"
-    )
-  fi
-fi
-
-if ! "${iptables_command[@]}" -nL DOCKER-USER >/dev/null 2>&1; then
-  echo "Docker's DOCKER-USER firewall chain is unavailable." >&2
-  exit 1
-fi
-
-"${iptables_command[@]}" -N "${policy_chain}" 2>/dev/null || true
-"${iptables_command[@]}" -F "${policy_chain}"
-"${iptables_command[@]}" -A "${policy_chain}" \
-  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-"${iptables_command[@]}" -A "${policy_chain}" \
-  -d "${dns_address}/32" -p udp --dport 53 \
-  -m conntrack --ctstate NEW -j ACCEPT
-"${iptables_command[@]}" -A "${policy_chain}" \
-  -d "${dns_address}/32" -p tcp --dport 53 \
-  -m conntrack --ctstate NEW -j ACCEPT
-"${iptables_command[@]}" -A "${policy_chain}" \
-  -d "${proxy_address}/32" -p tcp --dport 3128 \
-  -m conntrack --ctstate NEW -j ACCEPT
-
+internal_service_addresses=()
+internal_service_ports=()
 if [[ -n "${internal_services}" ]]; then
   IFS=',' read -r -a service_records <<<"${internal_services}"
   for record in "${service_records[@]}"; do
@@ -98,21 +66,56 @@ if [[ -n "${internal_services}" ]]; then
       echo "Internal service port must be from 1 to 65535: ${record}" >&2
       exit 1
     fi
-    service_address="$(container_address "${container_name}")"
-    "${iptables_command[@]}" -A "${policy_chain}" \
-      -d "${service_address}/32" -p tcp --dport "${service_port}" \
+    internal_service_addresses+=("$(container_address "${container_name}")")
+    internal_service_ports+=("${service_port}")
+  done
+fi
+
+network_policy_select_iptables "${policy_image}"
+
+network_policy_prepare_dispatcher \
+  "${forward_dispatcher}" "${forward_chain_a}" "${forward_chain_b}"
+forward_policy_chain="${NETWORK_POLICY_INACTIVE_CHAIN}"
+forward_has_active="${NETWORK_POLICY_DISPATCH_HAS_ACTIVE}"
+network_policy_prepare_dispatcher \
+  "${input_dispatcher}" "${input_chain_a}" "${input_chain_b}"
+input_policy_chain="${NETWORK_POLICY_INACTIVE_CHAIN}"
+input_has_active="${NETWORK_POLICY_DISPATCH_HAS_ACTIVE}"
+
+network_policy_iptables -A "${forward_policy_chain}" \
+  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+network_policy_iptables -A "${forward_policy_chain}" \
+  -o "${bridge_name}" -d "${dns_address}/32" -p udp --dport 53 \
+  -m conntrack --ctstate NEW -j ACCEPT
+network_policy_iptables -A "${forward_policy_chain}" \
+  -o "${bridge_name}" -d "${dns_address}/32" -p tcp --dport 53 \
+  -m conntrack --ctstate NEW -j ACCEPT
+network_policy_iptables -A "${forward_policy_chain}" \
+  -o "${bridge_name}" -d "${proxy_address}/32" -p tcp --dport 3128 \
+  -m conntrack --ctstate NEW -j ACCEPT
+
+if ((${#internal_service_addresses[@]} > 0)); then
+  for index in "${!internal_service_addresses[@]}"; do
+    service_address="${internal_service_addresses[${index}]}"
+    service_port="${internal_service_ports[${index}]}"
+    network_policy_iptables -A "${forward_policy_chain}" \
+      -o "${bridge_name}" -d "${service_address}/32" \
+      -p tcp --dport "${service_port}" \
       -m conntrack --ctstate NEW -j ACCEPT
   done
 fi
 
-"${iptables_command[@]}" -A "${policy_chain}" \
-  -m conntrack --ctstate NEW -j DROP
-"${iptables_command[@]}" -A "${policy_chain}" -j RETURN
+network_policy_iptables -A "${forward_policy_chain}" -j DROP
 
-if ! "${iptables_command[@]}" -C DOCKER-USER \
-  -i "${bridge_name}" -o "${bridge_name}" -j "${policy_chain}" 2>/dev/null; then
-  "${iptables_command[@]}" -I DOCKER-USER 1 \
-    -i "${bridge_name}" -o "${bridge_name}" -j "${policy_chain}"
-fi
+network_policy_iptables -A "${input_policy_chain}" \
+  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+network_policy_iptables -A "${input_policy_chain}" -j DROP
+
+network_policy_switch_dispatcher \
+  "${forward_dispatcher}" "${forward_policy_chain}" "${forward_has_active}"
+network_policy_switch_dispatcher \
+  "${input_dispatcher}" "${input_policy_chain}" "${input_has_active}"
+network_policy_ensure_hook DOCKER-USER "${bridge_name}" "${forward_dispatcher}"
+network_policy_ensure_hook INPUT "${bridge_name}" "${input_dispatcher}"
 
 echo "agent-egress policy applied on ${bridge_name}: DNS, policy proxy, and declared internal service ports are allowed."

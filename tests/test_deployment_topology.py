@@ -75,13 +75,11 @@ def test_worker_image_uses_the_persisted_agent_home() -> None:
 
 
 def test_network_policy_has_a_non_sudo_runc_executor() -> None:
-    for script_name in ("apply-agent-rpc-policy.sh", "apply-agent-egress-policy.sh"):
-        policy = (ROOT / "scripts" / script_name).read_text()
+    policy = (ROOT / "scripts" / "lib" / "network-policy.sh").read_text()
 
-        assert "SANDBOX_NETWORK_POLICY_IMAGE" in policy
-        assert "--runtime runc" in policy
-        assert "--network host" in policy
-        assert "--cap-add NET_ADMIN" in policy
+    assert "--runtime runc" in policy
+    assert "--network host" in policy
+    assert "--cap-add NET_ADMIN" in policy
 
 
 def test_control_plane_uses_domestic_registry_except_for_the_missing_litellm_rc() -> None:
