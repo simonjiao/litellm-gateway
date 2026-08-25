@@ -35,7 +35,7 @@ def _policy_project(
         "SANDBOX_MANAGER_RPC_NETWORK=agent-rpc\n"
         "SANDBOX_MANAGER_EGRESS_NETWORK=agent-egress\n"
         "SANDBOX_MANAGER_WORKER_PORT=8091\n"
-        "SANDBOX_NETWORK_POLICY_IMAGE=network-policy:test\n"
+        "AGENT_NETWORK_POLICY_IMAGE=network-policy:test\n"
         f"{extra_env}"
     )
 

@@ -14,7 +14,7 @@ source scripts/lib/network-policy.sh
 
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 worker_port="${SANDBOX_MANAGER_WORKER_PORT:-8091}"
-policy_image="${SANDBOX_NETWORK_POLICY_IMAGE:-litellm-network-policy:0.1.0}"
+policy_image="${AGENT_NETWORK_POLICY_IMAGE:-agent-network-policy:0.1.0}"
 forward_dispatcher="LITELLM_AR_FWD"
 forward_chain_a="LITELLM_AR_F_A"
 forward_chain_b="LITELLM_AR_F_B"

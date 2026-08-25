@@ -9,7 +9,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-proxy_image="${SANDBOX_EGRESS_PROXY_IMAGE:-litellm-codex-egress-proxy:0.1.0}"
+proxy_image="${AGENT_EGRESS_PROXY_IMAGE:-agent-egress-proxy:0.1.0}"
 debian_mirror="${DEBIAN_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian}"
 debian_security_mirror="${DEBIAN_SECURITY_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian-security}"
 

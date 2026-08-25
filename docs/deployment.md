@@ -122,6 +122,10 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 `AGENT_GATEWAY_IMAGE`、`AGENT_RESPONSES_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE` 和
 `SANDBOX_IMAGE` 覆盖。
 
+网络配套镜像默认为 `agent-egress-proxy:0.1.0`、`agent-dns:0.1.0` 和
+`agent-network-policy:0.1.0`；分别通过 `AGENT_EGRESS_PROXY_IMAGE`、`AGENT_DNS_IMAGE` 和
+`AGENT_NETWORK_POLICY_IMAGE` 覆盖。
+
 ```bash
 cp .env.example .env
 bash scripts/run-stack.sh

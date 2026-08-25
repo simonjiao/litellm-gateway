@@ -9,7 +9,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-policy_image="${SANDBOX_NETWORK_POLICY_IMAGE:-litellm-network-policy:0.1.0}"
+policy_image="${AGENT_NETWORK_POLICY_IMAGE:-agent-network-policy:0.1.0}"
 debian_mirror="${DEBIAN_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian}"
 debian_security_mirror="${DEBIAN_SECURITY_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian-security}"
 

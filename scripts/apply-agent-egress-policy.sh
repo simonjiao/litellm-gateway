@@ -17,7 +17,7 @@ source scripts/lib/internal-services.sh
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 dns_container="${SANDBOX_AGENT_DNS_CONTAINER:-agent-dns}"
 proxy_container="${SANDBOX_EGRESS_PROXY_CONTAINER:-egress-proxy}"
-policy_image="${SANDBOX_NETWORK_POLICY_IMAGE:-litellm-network-policy:0.1.0}"
+policy_image="${AGENT_NETWORK_POLICY_IMAGE:-agent-network-policy:0.1.0}"
 forward_dispatcher="LITELLM_AE_FWD"
 forward_chain_a="LITELLM_AE_F_A"
 forward_chain_b="LITELLM_AE_F_B"

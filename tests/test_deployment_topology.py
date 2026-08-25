@@ -131,6 +131,34 @@ def test_network_policy_has_a_non_sudo_runc_executor() -> None:
     assert "--cap-add NET_ADMIN" in policy
 
 
+def test_network_component_images_use_agent_names() -> None:
+    env_example = (ROOT / ".env.example").read_text()
+    contracts = {
+        "AGENT_EGRESS_PROXY_IMAGE": (
+            "agent-egress-proxy:0.1.0",
+            ("build-egress-proxy.sh", "run-egress-proxy.sh"),
+        ),
+        "AGENT_DNS_IMAGE": (
+            "agent-dns:0.1.0",
+            ("build-agent-dns.sh", "run-agent-dns.sh"),
+        ),
+        "AGENT_NETWORK_POLICY_IMAGE": (
+            "agent-network-policy:0.1.0",
+            (
+                "build-network-policy.sh",
+                "apply-agent-egress-policy.sh",
+                "apply-agent-rpc-policy.sh",
+            ),
+        ),
+    }
+
+    for variable, (image, script_names) in contracts.items():
+        assert f"{variable}={image}" in env_example
+        for script_name in script_names:
+            script = (ROOT / "scripts" / script_name).read_text()
+            assert f"${{{variable}:-{image}}}" in script
+
+
 def test_runtime_images_use_domestic_registry_except_for_the_missing_litellm_rc() -> None:
     compose = (ROOT / "compose.yaml").read_text()
     gateway = (ROOT / "deploy" / "gateway" / "Dockerfile").read_text()

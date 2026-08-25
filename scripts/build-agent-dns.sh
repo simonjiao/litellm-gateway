@@ -9,7 +9,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-dns_image="${SANDBOX_AGENT_DNS_IMAGE:-litellm-agent-dns:0.1.0}"
+dns_image="${AGENT_DNS_IMAGE:-agent-dns:0.1.0}"
 debian_mirror="${DEBIAN_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian}"
 debian_security_mirror="${DEBIAN_SECURITY_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian-security}"
 
