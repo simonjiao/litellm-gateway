@@ -40,6 +40,22 @@ network_policy_iptables() {
   "${NETWORK_POLICY_IPTABLES[@]}" "$@"
 }
 
+network_policy_bridge_name() {
+  local network_name="$1"
+  local network_id bridge_name
+
+  network_id="$(docker network inspect --format '{{.Id}}' "${network_name}")"
+  bridge_name="$(
+    docker network inspect \
+      --format '{{index .Options "com.docker.network.bridge.name"}}' \
+      "${network_name}"
+  )"
+  if [[ -z "${bridge_name}" || "${bridge_name}" == "<no value>" ]]; then
+    bridge_name="br-${network_id:0:12}"
+  fi
+  printf '%s\n' "${bridge_name}"
+}
+
 network_policy_ensure_chain() {
   local chain="$1"
 

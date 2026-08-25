@@ -1,3 +1,6 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 from sandbox_manager.settings import ManagerSettings
@@ -73,3 +76,47 @@ def test_egress_check_delegates_direct_network_denials_to_ip_probe() -> None:
 
     assert "check-agent-network-policy.sh" in policy_check
     assert "--direct-url" not in policy_check
+
+
+def test_existing_egress_uplink_must_be_a_local_ipv4_bridge(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    scripts = project / "scripts"
+    fake_bin = tmp_path / "bin"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    shutil.copy2(ROOT / "scripts" / "run-egress-proxy.sh", scripts)
+    (project / ".env").write_text("")
+
+    docker = fake_bin / "docker"
+    docker.write_text(
+        """#!/bin/sh
+case "$*" in
+  "network inspect agent-egress") exit 0 ;;
+  *"{{.Internal}} agent-egress") printf '%s\\n' true ;;
+  *".Subnet"*"agent-egress") printf '%s\\n' 172.30.0.0/24 ;;
+  "network inspect codex-egress-uplink") exit 0 ;;
+  *"{{.Internal}} codex-egress-uplink") printf '%s\\n' false ;;
+  *"{{.Driver}} codex-egress-uplink") printf '%s\\n' overlay ;;
+  *"{{.Scope}} codex-egress-uplink") printf '%s\\n' swarm ;;
+  *"{{.EnableIPv6}} codex-egress-uplink") printf '%s\\n' false ;;
+  *".Gateway"*"codex-egress-uplink") printf '%s\\n' 172.31.0.1 ;;
+  "image inspect "*) exit 1 ;;
+esac
+exit 0
+"""
+    )
+    docker.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        ["/bin/bash", "scripts/run-egress-proxy.sh"],
+        cwd=project,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "local IPv4 bridge" in result.stderr

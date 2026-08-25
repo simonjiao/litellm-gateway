@@ -42,6 +42,8 @@ if [[ ! -r "${resolv_conf_file}" ]] \
 fi
 
 docker run --rm \
+  --label io.litellm-codex-gateway.managed=true \
+  --label io.litellm-codex-gateway.sandbox-id=sandbox_egress_policy_smoke \
   --runtime "${sandbox_runtime}" \
   --network "${sandbox_network}" \
   --read-only \

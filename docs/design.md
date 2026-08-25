@@ -64,7 +64,9 @@ Gateway、Adapter、Manager 和 Worker 使用相互独立的部署凭证。每�
 
 必须允许 Adapter→Worker 的新连接及其返回流量，并拒绝 Worker→Adapter/Manager 的新连接。
 Agent 的互联网访问默认拒绝，只允许经过 egress-proxy；访问 MCP 或本地模型等内部接口也
-必须按服务身份和端口显式允许。所有内部调用使用 DNS 服务名，不在配置中固定 IP。
+必须按服务身份和端口显式允许。Agent 网络成员变更是运行平台授权操作，只有 Manager 可附加
+受管 Worker，部署方可附加明确声明的基础设施和内部服务。所有内部调用使用 DNS 服务名，
+不在配置中固定 IP。
 
 ## 运行环境要求
 

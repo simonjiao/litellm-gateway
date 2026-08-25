@@ -44,20 +44,53 @@ container_address() {
 
 dns_address="$(container_address "${dns_container}")"
 proxy_address="$(container_address "${proxy_container}")"
-network_id="$(docker network inspect --format '{{.Id}}' "${egress_network}")"
-bridge_name="$(
-  docker network inspect \
-    --format '{{index .Options "com.docker.network.bridge.name"}}' \
-    "${egress_network}"
-)"
-if [[ -z "${bridge_name}" || "${bridge_name}" == "<no value>" ]]; then
-  bridge_name="br-${network_id:0:12}"
-fi
+bridge_name="$(network_policy_bridge_name "${egress_network}")"
 
 internal_service_addresses=()
 for container_name in "${SANDBOX_INTERNAL_SERVICE_CONTAINERS[@]}"; do
   internal_service_addresses+=("$(container_address "${container_name}")")
 done
+
+is_declared_egress_service() {
+  local member="$1"
+  local declared_container
+
+  if [[ "${member}" == "${dns_container}" || "${member}" == "${proxy_container}" ]]; then
+    return 0
+  fi
+  for declared_container in "${SANDBOX_INTERNAL_SERVICE_CONTAINERS[@]}"; do
+    if [[ "${member}" == "${declared_container}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+network_members="$(
+  docker network inspect \
+    --format '{{range .Containers}}{{println .Name}}{{end}}' \
+    "${egress_network}"
+)"
+while IFS= read -r member; do
+  if [[ -z "${member}" ]] || is_declared_egress_service "${member}"; then
+    continue
+  fi
+  managed="$(
+    docker container inspect \
+      --format '{{index .Config.Labels "io.litellm-codex-gateway.managed"}}' \
+      "${member}"
+  )"
+  sandbox_id="$(
+    docker container inspect \
+      --format '{{index .Config.Labels "io.litellm-codex-gateway.sandbox-id"}}' \
+      "${member}"
+  )"
+  if [[ "${managed}" == "true" && "${sandbox_id}" == sandbox_* ]]; then
+    continue
+  fi
+  echo "Agent egress network '${egress_network}' has undeclared member '${member}'." >&2
+  exit 1
+done <<<"${network_members}"
 
 network_policy_select_iptables "${policy_image}"
 

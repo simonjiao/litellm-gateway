@@ -67,12 +67,18 @@ if [[ -z "${sandbox_cidr}" ]]; then
 fi
 
 if docker network inspect "${uplink_network}" >/dev/null 2>&1; then
-  if [[ "$(docker network inspect --format '{{.Internal}}' "${uplink_network}")" == "true" ]]; then
-    echo "Uplink network '${uplink_network}' must not be internal." >&2
+  uplink_internal="$(docker network inspect --format '{{.Internal}}' "${uplink_network}")"
+  uplink_driver="$(docker network inspect --format '{{.Driver}}' "${uplink_network}")"
+  uplink_scope="$(docker network inspect --format '{{.Scope}}' "${uplink_network}")"
+  uplink_ipv6="$(docker network inspect --format '{{.EnableIPv6}}' "${uplink_network}")"
+  if [[ "${uplink_internal}" != "false" || "${uplink_driver}" != "bridge" \
+    || "${uplink_scope}" != "local" || "${uplink_ipv6}" != "false" ]]; then
+    echo "Uplink network '${uplink_network}' must be a non-internal local IPv4 bridge." >&2
     exit 1
   fi
 else
-  docker network create "${uplink_network}" >/dev/null
+  docker network create --driver bridge --scope local --ipv6=false \
+    "${uplink_network}" >/dev/null
 fi
 
 uplink_gateway="$(

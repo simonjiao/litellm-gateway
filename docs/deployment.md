@@ -67,7 +67,9 @@ Docker 参考部署只接受本地 IPv4 bridge 网络。进入 agent-rpc、agent
 切换生效链；地址或服务校验失败时保留原有策略。
 
 egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型需要被 Agent 访问时，
-显式加入 agent-egress，并按服务身份、DNS 名称和端口放行；加入网络本身不构成授权。
+显式加入 agent-egress，并按服务身份、DNS 名称和端口放行。agent-egress 的成员变更属于运行
+平台授权操作：只有 Manager 可附加受管 Worker，部署方可附加声明的基础设施和内部服务；
+策略应用时拒绝未声明成员。网络准入不能替代内部服务自身的 Bearer 或 mTLS 认证。
 
 ## 权限与 Secret
 
@@ -144,6 +146,6 @@ bash scripts/check-egress-policy.sh
 bash scripts/run-basic-smoke.sh
 ```
 
-第一项同时验证代理白名单、Adapter→Worker DNS/RPC，以及 Worker 无法访问 Adapter、Manager、
-Gateway、宿主网桥和运行时解析得到的公网 IP。第二项要求 Agent 在工作区执行随机 nonce 的
-shell 摘要命令，并校验返回值。
+第一项同时验证代理白名单、Adapter→Worker DNS/TCP 方向性，以及 Worker 无法访问 Adapter、
+Manager、Gateway、宿主网桥和运行时解析得到的公网 IP。第二项经 Gateway、Adapter 和真实
+Worker 要求 Agent 在工作区执行随机 nonce 的 shell 摘要命令，并校验返回值。

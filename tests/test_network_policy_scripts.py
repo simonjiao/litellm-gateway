@@ -68,10 +68,15 @@ exit 0
 case "$*" in
   "compose ps -q responses-adapter") printf '%s\\n' adapter-id ;;
   *"container inspect"*"missing"*) exit 1 ;;
+  *"container inspect"*"io.litellm-codex-gateway.managed"*)
+    printf '%s\\n' "${TEST_EGRESS_MEMBER_MANAGED:-}" ;;
+  *"container inspect"*"io.litellm-codex-gateway.sandbox-id"*)
+    printf '%s\\n' "${TEST_EGRESS_SANDBOX_ID:-}" ;;
   *"container inspect"*"agent-dns"*) printf '%s\\n' 172.30.0.3 ;;
   *"container inspect"*"egress-proxy"*) printf '%s\\n' 172.30.0.4 ;;
   *"container inspect"*) printf '%s\\n' 172.30.0.2 ;;
   *"com.docker.network.bridge.name"*) printf '%s\\n' '<no value>' ;;
+  *"network inspect"*".Containers"*) printf '%s\\n' "${TEST_EGRESS_MEMBER:-}" ;;
   *"network inspect"*".Id"*) printf '%s\\n' 0123456789abcdef ;;
 esac
 exit 0
@@ -166,6 +171,35 @@ def test_egress_policy_rejects_invalid_internal_dns_before_mutating_firewall(
     assert result.returncode != 0
     mutating_operations = {"-N", "-F", "-A", "-I", "-R", "-D", "-X"}
     assert not any(command[0] in mutating_operations for command in commands)
+
+
+def test_egress_policy_rejects_an_undeclared_network_member_before_mutating(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_policy_script(
+        tmp_path,
+        "apply-agent-egress-policy.sh",
+        extra_env="TEST_EGRESS_MEMBER=intruder\n",
+    )
+
+    assert result.returncode != 0
+    assert "undeclared member" in result.stderr
+    mutating_operations = {"-N", "-F", "-A", "-I", "-R", "-D", "-X"}
+    assert not any(command[0] in mutating_operations for command in commands)
+
+
+def test_egress_policy_accepts_a_manager_owned_worker_member(tmp_path: Path) -> None:
+    result, _ = _run_policy_script(
+        tmp_path,
+        "apply-agent-egress-policy.sh",
+        extra_env=(
+            "TEST_EGRESS_MEMBER=sandbox-worker-test\n"
+            "TEST_EGRESS_MEMBER_MANAGED=true\n"
+            "TEST_EGRESS_SANDBOX_ID=sandbox_test\n"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_egress_policy_prevents_known_non_worker_services_from_initiating(

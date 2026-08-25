@@ -38,15 +38,7 @@ if [[ -z "${adapter_address}" ]]; then
   exit 1
 fi
 
-network_id="$(docker network inspect --format '{{.Id}}' "${rpc_network}")"
-bridge_name="$(
-  docker network inspect \
-    --format '{{index .Options "com.docker.network.bridge.name"}}' \
-    "${rpc_network}"
-)"
-if [[ -z "${bridge_name}" || "${bridge_name}" == "<no value>" ]]; then
-  bridge_name="br-${network_id:0:12}"
-fi
+bridge_name="$(network_policy_bridge_name "${rpc_network}")"
 
 network_policy_select_iptables "${policy_image}"
 

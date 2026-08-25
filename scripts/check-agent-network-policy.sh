@@ -93,6 +93,8 @@ trap cleanup_probe EXIT
 
 docker container create \
   --name "${probe_container}" \
+  --label io.litellm-codex-gateway.managed=true \
+  --label io.litellm-codex-gateway.sandbox-id=sandbox_agent_network_smoke \
   --runtime "${sandbox_runtime}" \
   --network "${rpc_network}" \
   --read-only \
