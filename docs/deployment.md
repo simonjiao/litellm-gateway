@@ -62,6 +62,10 @@ allow  Worker → egress-proxy
 规则应基于工作负载身份、标签、网络域或运行时发现的数据生成，不依赖固定 IP。Adapter 的
 服务监听面只属于 control；agent-rpc 仅用于 Adapter 发起到 Worker 的连接。
 
+Docker 参考部署只接受本地 IPv4 bridge 网络。进入 agent-rpc、agent-egress 网桥的全部转发
+流量均进入默认拒绝策略，发往宿主的流量由 INPUT 策略拒绝。规则先写入未引用链，完整后再
+切换生效链；地址或服务校验失败时保留原有策略。
+
 egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型需要被 Agent 访问时，
 显式加入 agent-egress，并按服务身份、DNS 名称和端口放行；加入网络本身不构成授权。
 
@@ -105,9 +109,10 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 ## Docker 参考部署
 
 仓库中的 `compose.yaml` 将 Gateway、Adapter 和 Sandbox Manager 作为独立 `runc` 服务部署，
-只发布 Gateway 端口。Manager 通过 Docker socket 创建 `runsc` Worker；该权限不能细分时，
-应使用专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、准备三个逻辑网络、启动
-DNS/策略代理和控制面，并按容器当前地址写入方向性规则：
+只发布 Gateway 端口。Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
+`SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
+对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
+准备三个逻辑网络、启动 DNS/策略代理和内部控制面，应用方向性规则后才启动 Gateway：
 
 ```bash
 cp .env.example .env
@@ -115,9 +120,13 @@ bash scripts/run-stack.sh
 ```
 
 默认复用 `$CODEX_HOME/auth.json`（未设置时为 `$HOME/.codex/auth.json`）。脚本将认证副本放入
-忽略版本控制的运行目录，并只读注入 Worker；不会把认证写入镜像。Docker Compose 重建
-Adapter，或 agent-dns、egress-proxy、内部服务重建后，必须重新应用网络策略；再次执行
-`run-stack.sh` 即可。
+忽略版本控制且权限为 `0700` 的 Secret 根目录，再只读注入 Worker；不会把认证写入镜像。
+自定义 `SANDBOX_MANAGER_SECRET_ROOT` 也必须由部署用户拥有且权限为 `0700`。
+
+Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或宿主重启、Adapter/DNS/代理/内部服务
+变化后，必须再次执行 `run-stack.sh`；脚本重建 Manager 和 Adapter、清理现有 Worker、原子
+恢复策略，失败时保持 Gateway 和 Adapter 停止。因此部署操作会结束活动 Sandbox，并清除
+Adapter 的单进程内存状态。
 
 ## 验收
 
@@ -127,3 +136,14 @@ Adapter，或 agent-dns、egress-proxy、内部服务重建后，必须重新应
 - Worker 无法直接访问互联网，只能通过 egress-proxy 访问允许目标。
 - Manager 无 Agent 数据面转发接口。
 - Sandbox 内 Agent Runtime 能够执行工作区命令，且不启动与外层隔离不兼容的内层 Sandbox。
+
+Docker 参考部署执行：
+
+```bash
+bash scripts/check-egress-policy.sh
+bash scripts/run-basic-smoke.sh
+```
+
+第一项同时验证代理白名单、Adapter→Worker DNS/RPC，以及 Worker 无法访问 Adapter、Manager、
+Gateway、宿主网桥和运行时解析得到的公网 IP。第二项要求 Agent 在工作区执行随机 nonce 的
+shell 摘要命令，并校验返回值。

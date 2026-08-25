@@ -25,11 +25,9 @@ def _policy_project(
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     shutil.copy2(ROOT / "scripts" / script_name, scripts / script_name)
-    source_library = ROOT / "scripts" / "lib" / "network-policy.sh"
-    if source_library.exists():
-        library_dir = scripts / "lib"
-        library_dir.mkdir()
-        shutil.copy2(source_library, library_dir / source_library.name)
+    source_library_dir = ROOT / "scripts" / "lib"
+    if source_library_dir.exists():
+        shutil.copytree(source_library_dir, scripts / "lib")
     (project / ".env").write_text(
         "SANDBOX_MANAGER_RPC_NETWORK=agent-rpc\n"
         "SANDBOX_MANAGER_EGRESS_NETWORK=agent-egress\n"
@@ -149,6 +147,20 @@ def test_egress_policy_validates_every_destination_before_mutating_firewall(
         tmp_path,
         "apply-agent-egress-policy.sh",
         extra_env="SANDBOX_AGENT_INTERNAL_SERVICES=service=missing:8080\n",
+    )
+
+    assert result.returncode != 0
+    mutating_operations = {"-N", "-F", "-A", "-I", "-R", "-D", "-X"}
+    assert not any(command[0] in mutating_operations for command in commands)
+
+
+def test_egress_policy_rejects_invalid_internal_dns_before_mutating_firewall(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_policy_script(
+        tmp_path,
+        "apply-agent-egress-policy.sh",
+        extra_env="SANDBOX_AGENT_INTERNAL_SERVICES='bad name=service:8080'\n",
     )
 
     assert result.returncode != 0

@@ -57,5 +57,6 @@ docker run --rm \
   --proxy "${proxy_url}" \
   --allowed-url https://chatgpt.com/backend-api/codex \
   --allowed-url https://auth.openai.com/oauth/token \
-  --denied-url https://example.com/ \
-  --direct-url https://example.com/
+  --denied-url https://example.com/
+
+bash scripts/check-agent-network-policy.sh

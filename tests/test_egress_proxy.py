@@ -66,3 +66,10 @@ def test_proxy_launcher_and_policy_check_do_not_pin_network_addresses() -> None:
     assert "\n  --ip " not in launcher
     assert '--runtime "${sandbox_runtime}"' in policy_check
     assert "--add-host" not in policy_check
+
+
+def test_egress_check_delegates_direct_network_denials_to_ip_probe() -> None:
+    policy_check = (ROOT / "scripts" / "check-egress-policy.sh").read_text()
+
+    assert "check-agent-network-policy.sh" in policy_check
+    assert "--direct-url" not in policy_check

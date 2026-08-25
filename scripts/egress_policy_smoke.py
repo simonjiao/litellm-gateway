@@ -29,7 +29,6 @@ def main() -> int:
     parser.add_argument("--proxy", required=True)
     parser.add_argument("--allowed-url", action="append", required=True)
     parser.add_argument("--denied-url", required=True)
-    parser.add_argument("--direct-url", required=True)
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args()
 
@@ -44,11 +43,6 @@ def main() -> int:
     print(f"denied {args.denied_url}: {outcome} status={status}")
     if outcome != "proxy-denied":
         failures.append(f"denied URL was not rejected by proxy: {args.denied_url}")
-
-    outcome, status = _request(args.direct_url, proxy=None, timeout=args.timeout)
-    print(f"direct {args.direct_url}: {outcome} status={status}")
-    if outcome == "response":
-        failures.append(f"direct internet access unexpectedly succeeded: {args.direct_url}")
 
     if failures:
         for failure in failures:

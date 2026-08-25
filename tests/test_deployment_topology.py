@@ -30,10 +30,11 @@ def test_compose_deploys_control_plane_as_separate_runc_services() -> None:
     )
 
 
-def test_gateway_restart_is_gated_by_host_network_policy() -> None:
+def test_entry_workload_restart_is_gated_by_host_network_policy() -> None:
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
 
     assert compose["services"]["gateway"]["restart"] == "no"
+    assert compose["services"]["responses-adapter"]["restart"] == "no"
 
 
 def test_compose_uses_dns_and_contains_no_fixed_network_address() -> None:

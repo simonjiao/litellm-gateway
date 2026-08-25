@@ -53,6 +53,7 @@ services:
 
   responses-adapter:
     <<: *control-plane
+    restart: "no"
     command:
       - codex-responses-adapter
     environment:

@@ -20,15 +20,17 @@ Adapter ── agent-rpc ──→ Worker (runsc)
 `SANDBOX_AGENT_INTERNAL_SERVICES` 声明的精确服务名。启动脚本根据容器当前地址生成 hosts 和
 resolver 文件，不配置固定 IP 或固定子网。
 
-主机的 `DOCKER-USER` 规则运行时发现网络网桥和服务地址，只允许：
+主机策略运行时发现网络网桥和服务地址。`DOCKER-USER` 检查进入 Agent 网桥的全部转发流量，
+INPUT 链拒绝 Agent 到宿主的连接，只允许：
 
 - Adapter 向 Worker TCP/8091 发起新连接；
 - Worker 向 agent-dns TCP/UDP 53、egress-proxy TCP/3128 发起新连接；
 - Worker 向显式内部服务的声明端口发起新连接；
 - 已建立连接的返回流量。
 
-其他 Agent 网络内的新连接默认拒绝。Compose 重建 Adapter，或 DNS、代理、内部服务被重建
-后，应重新运行对应策略脚本；`run-stack.sh` 会自动执行。
+DNS、代理和已声明内部服务只能返回已建立连接，不能主动使用代理或访问其他声明服务。其他
+Agent 流量默认拒绝。规则通过未引用链构建并原子切换；`run-stack.sh` 在规则成功前保持
+Gateway 停止，Adapter 不发布宿主端口，失败时同时停止二者。
 
 ## 公网策略
 
@@ -65,4 +67,5 @@ bash scripts/run-basic-smoke.sh
 ```
 
 策略检查使用真实 `runsc` Worker 镜像，验证允许域名可经代理访问、未允许域名被拒绝，并验证
-Worker 不能直连公网。
+Adapter 可通过服务名连接 Worker，而 Worker 不能连接控制面、宿主网桥或运行时解析得到的
+公网 IP。测试地址只用于当次探测，不写入部署配置。

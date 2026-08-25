@@ -9,12 +9,14 @@ if [[ -f .env ]]; then
   set +a
 fi
 
+# shellcheck source=scripts/lib/internal-services.sh
+source scripts/lib/internal-services.sh
+
 managed_label="io.litellm-codex-gateway.component"
 managed_value="agent-dns"
 sandbox_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 proxy_container="${SANDBOX_EGRESS_PROXY_CONTAINER:-egress-proxy}"
 proxy_alias="${SANDBOX_EGRESS_PROXY_ALIAS:-egress-proxy}"
-internal_services="${SANDBOX_AGENT_INTERNAL_SERVICES:-}"
 dns_image="${SANDBOX_AGENT_DNS_IMAGE:-litellm-agent-dns:0.1.0}"
 dns_container="${SANDBOX_AGENT_DNS_CONTAINER:-agent-dns}"
 memory_limit="${SANDBOX_AGENT_DNS_MEMORY_LIMIT:-64m}"
@@ -23,6 +25,8 @@ pids_limit="${SANDBOX_AGENT_DNS_PIDS_LIMIT:-32}"
 runtime_dir="$(pwd)/.runtime/agent-dns"
 hosts_file="${runtime_dir}/hosts"
 resolv_conf_file="${runtime_dir}/resolv.conf"
+
+sandbox_parse_internal_services "${SANDBOX_AGENT_INTERNAL_SERVICES:-}"
 
 if ! docker network inspect "${sandbox_network}" >/dev/null 2>&1; then
   echo "Agent egress network '${sandbox_network}' is missing; run prepare-sandbox-network.sh first." >&2
@@ -38,21 +42,12 @@ if ! docker image inspect "${dns_image}" >/dev/null 2>&1; then
 fi
 
 records=("${proxy_alias}=${proxy_container}")
-if [[ -n "${internal_services}" ]]; then
-  IFS=',' read -r -a service_records <<<"${internal_services}"
-  for record in "${service_records[@]}"; do
-    if [[ ! "${record}" =~ ^[^=]+=[A-Za-z0-9][A-Za-z0-9_.-]*:([0-9]+)$ ]]; then
-      echo "Internal service '${record}' must use dns-name=container-name:port." >&2
-      exit 1
-    fi
-    service_port="${BASH_REMATCH[1]}"
-    if ((10#${service_port} < 1 || 10#${service_port} > 65535)); then
-      echo "Internal service port must be from 1 to 65535: ${record}" >&2
-      exit 1
-    fi
-    records+=("${record}")
-  done
-fi
+for index in "${!SANDBOX_INTERNAL_SERVICE_DNS_NAMES[@]}"; do
+  dns_name="${SANDBOX_INTERNAL_SERVICE_DNS_NAMES[${index}]}"
+  container_name="${SANDBOX_INTERNAL_SERVICE_CONTAINERS[${index}]}"
+  service_port="${SANDBOX_INTERNAL_SERVICE_PORTS[${index}]}"
+  records+=("${dns_name}=${container_name}:${service_port}")
+done
 
 install -d -m 0700 "${runtime_dir}"
 temporary_hosts="$(mktemp "${runtime_dir}/hosts.XXXXXX")"
@@ -69,11 +64,11 @@ for record in "${records[@]}"; do
   dns_name="${record%%=*}"
   target="${record#*=}"
   container_name="${target%%:*}"
-  if [[ ! "${dns_name}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$ ]]; then
+  if ! sandbox_valid_dns_name "${dns_name}"; then
     echo "Invalid Agent DNS name: ${dns_name}" >&2
     exit 1
   fi
-  if [[ ! "${container_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+  if ! sandbox_valid_container_name "${container_name}"; then
     echo "Invalid internal service container name: ${container_name}" >&2
     exit 1
   fi

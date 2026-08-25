@@ -12,6 +12,9 @@ set -a
 source .env
 set +a
 
+# shellcheck source=scripts/lib/internal-services.sh
+source scripts/lib/internal-services.sh
+
 : "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}"
 : "${CODEX_ADAPTER_API_KEY:?CODEX_ADAPTER_API_KEY is required}"
 : "${SANDBOX_MANAGER_API_KEY:?SANDBOX_MANAGER_API_KEY is required}"
@@ -26,17 +29,8 @@ config_source="${SANDBOX_MANAGER_CODEX_CONFIG_SOURCE_FILE:-}"
 resolv_conf_file="${runtime_root}/agent-dns/resolv.conf"
 docker_socket="${SANDBOX_MANAGER_DOCKER_SOCKET:-/var/run/docker.sock}"
 
-internal_no_proxy_names=()
-if [[ -n "${SANDBOX_AGENT_INTERNAL_SERVICES:-}" ]]; then
-  IFS=',' read -r -a service_records <<<"${SANDBOX_AGENT_INTERNAL_SERVICES}"
-  for record in "${service_records[@]}"; do
-    if [[ ! "${record}" =~ ^([^=]+)=([A-Za-z0-9][A-Za-z0-9_.-]*):([0-9]+)$ ]]; then
-      echo "Internal service '${record}' must use dns-name=container-name:port." >&2
-      exit 1
-    fi
-    internal_no_proxy_names+=("${BASH_REMATCH[1]}")
-  done
-fi
+sandbox_parse_internal_services "${SANDBOX_AGENT_INTERNAL_SERVICES:-}"
+internal_no_proxy_names=("${SANDBOX_INTERNAL_SERVICE_DNS_NAMES[@]}")
 
 if [[ "${secret_root}" != /* ]]; then
   secret_root="$(realpath -m "${secret_root}")"
@@ -98,7 +92,13 @@ bash scripts/build-egress-proxy.sh
 bash scripts/build-agent-dns.sh
 bash scripts/build-network-policy.sh
 docker compose build
-docker compose stop gateway
+
+stop_entry_workloads_on_error() {
+  docker compose stop gateway responses-adapter >/dev/null 2>&1 || true
+}
+trap stop_entry_workloads_on_error ERR
+
+docker compose stop gateway responses-adapter
 bash scripts/run-egress-proxy.sh
 bash scripts/run-agent-dns.sh
 
@@ -113,5 +113,6 @@ bash scripts/apply-agent-rpc-policy.sh
 bash scripts/apply-agent-egress-policy.sh
 docker compose up --detach --wait --wait-timeout 120 --force-recreate --no-deps \
   gateway
+trap - ERR
 
 echo "Gateway, Responses Adapter, Sandbox Manager, Agent DNS, and policy egress are ready."

@@ -11,11 +11,12 @@ fi
 
 # shellcheck source=scripts/lib/network-policy.sh
 source scripts/lib/network-policy.sh
+# shellcheck source=scripts/lib/internal-services.sh
+source scripts/lib/internal-services.sh
 
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 dns_container="${SANDBOX_AGENT_DNS_CONTAINER:-agent-dns}"
 proxy_container="${SANDBOX_EGRESS_PROXY_CONTAINER:-egress-proxy}"
-internal_services="${SANDBOX_AGENT_INTERNAL_SERVICES:-}"
 policy_image="${SANDBOX_NETWORK_POLICY_IMAGE:-litellm-network-policy:0.1.0}"
 forward_dispatcher="LITELLM_AE_FWD"
 forward_chain_a="LITELLM_AE_F_A"
@@ -23,6 +24,8 @@ forward_chain_b="LITELLM_AE_F_B"
 input_dispatcher="LITELLM_AE_INPUT"
 input_chain_a="LITELLM_AE_I_A"
 input_chain_b="LITELLM_AE_I_B"
+
+sandbox_parse_internal_services "${SANDBOX_AGENT_INTERNAL_SERVICES:-}"
 
 container_address() {
   local container_name="$1"
@@ -52,24 +55,9 @@ if [[ -z "${bridge_name}" || "${bridge_name}" == "<no value>" ]]; then
 fi
 
 internal_service_addresses=()
-internal_service_ports=()
-if [[ -n "${internal_services}" ]]; then
-  IFS=',' read -r -a service_records <<<"${internal_services}"
-  for record in "${service_records[@]}"; do
-    if [[ ! "${record}" =~ ^[^=]+=([A-Za-z0-9][A-Za-z0-9_.-]*):([0-9]+)$ ]]; then
-      echo "Internal service '${record}' must use dns-name=container-name:port." >&2
-      exit 1
-    fi
-    container_name="${BASH_REMATCH[1]}"
-    service_port="${BASH_REMATCH[2]}"
-    if ((10#${service_port} < 1 || 10#${service_port} > 65535)); then
-      echo "Internal service port must be from 1 to 65535: ${record}" >&2
-      exit 1
-    fi
-    internal_service_addresses+=("$(container_address "${container_name}")")
-    internal_service_ports+=("${service_port}")
-  done
-fi
+for container_name in "${SANDBOX_INTERNAL_SERVICE_CONTAINERS[@]}"; do
+  internal_service_addresses+=("$(container_address "${container_name}")")
+done
 
 network_policy_select_iptables "${policy_image}"
 
@@ -102,7 +90,7 @@ network_policy_iptables -A "${forward_policy_chain}" \
 if ((${#internal_service_addresses[@]} > 0)); then
   for index in "${!internal_service_addresses[@]}"; do
     service_address="${internal_service_addresses[${index}]}"
-    service_port="${internal_service_ports[${index}]}"
+    service_port="${SANDBOX_INTERNAL_SERVICE_PORTS[${index}]}"
     network_policy_iptables -A "${forward_policy_chain}" \
       -o "${bridge_name}" -d "${service_address}/32" \
       -p tcp --dport "${service_port}" \
