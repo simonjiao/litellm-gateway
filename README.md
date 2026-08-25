@@ -9,6 +9,7 @@ Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
 ```
 
 - Gateway、Adapter 与 Sandbox Manager 使用普通 `runc` 容器。
+- Gateway、Adapter、Sandbox Manager 与 Sandbox Worker 使用独立运行镜像。
 - Sandbox Manager 只管理 Sandbox 生命周期。
 - Adapter 直接与 Sandbox Worker 通信。
 - 每个 Sandbox Worker 独占 `runsc` 容器、工作区和 Agent Runtime 会话。

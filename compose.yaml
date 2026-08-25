@@ -1,15 +1,7 @@
 name: litellm-responses-gateway
 
-x-control-plane: &control-plane
-  build:
-    context: .
-    dockerfile: deploy/control-plane/Dockerfile
-    args:
-      PYPI_INDEX_URL: ${CONTROL_PLANE_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
-      LITELLM_INDEX_URL: ${CONTROL_PLANE_LITELLM_INDEX_URL:-https://pypi.org/simple}
-  image: ${CONTROL_PLANE_IMAGE:-litellm-responses-control:0.3.0}
+x-common-runtime: &common-runtime
   runtime: runc
-  restart: unless-stopped
   read_only: true
   cap_drop:
     - ALL
@@ -20,16 +12,15 @@ x-control-plane: &control-plane
 
 services:
   gateway:
-    <<: *control-plane
+    <<: *common-runtime
+    build:
+      context: .
+      dockerfile: deploy/gateway/Dockerfile
+      args:
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        LITELLM_INDEX_URL: ${LITELLM_INDEX_URL:-https://pypi.org/simple}
+    image: ${AGENT_GATEWAY_IMAGE:-agent-gateway:0.3.0}
     restart: "no"
-    command:
-      - litellm
-      - --config
-      - /opt/gateway/config/litellm.yaml
-      - --host
-      - 0.0.0.0
-      - --port
-      - "4000"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
       CODEX_ADAPTER_BASE_URL: http://responses-adapter:8090/v1
@@ -52,10 +43,14 @@ services:
       - control
 
   responses-adapter:
-    <<: *control-plane
+    <<: *common-runtime
+    build:
+      context: .
+      dockerfile: deploy/responses-adapter/Dockerfile
+      args:
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: ${AGENT_RESPONSES_ADAPTER_IMAGE:-agent-responses-adapter:0.3.0}
     restart: "no"
-    command:
-      - codex-responses-adapter
     environment:
       CODEX_ADAPTER_HOST: 0.0.0.0
       CODEX_ADAPTER_PORT: "8090"
@@ -92,9 +87,14 @@ services:
       - agent-rpc
 
   sandbox-manager:
-    <<: *control-plane
-    command:
-      - sandbox-manager
+    <<: *common-runtime
+    build:
+      context: .
+      dockerfile: deploy/sandbox-manager/Dockerfile
+      args:
+        PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: ${AGENT_SANDBOX_MANAGER_IMAGE:-agent-sandbox-manager:0.3.0}
+    restart: unless-stopped
     group_add:
       - ${DOCKER_GID:?set DOCKER_GID to the Docker socket group id}
     environment:
@@ -103,7 +103,7 @@ services:
       SANDBOX_MANAGER_PORT: "8092"
       SANDBOX_MANAGER_API_KEY: ${SANDBOX_MANAGER_API_KEY:?set SANDBOX_MANAGER_API_KEY}
       SANDBOX_MANAGER_WORKER_TOKEN_SECRET: ${SANDBOX_MANAGER_WORKER_TOKEN_SECRET:?set SANDBOX_MANAGER_WORKER_TOKEN_SECRET}
-      SANDBOX_MANAGER_IMAGE: ${SANDBOX_MANAGER_IMAGE:-litellm-codex-sandbox-worker:0.3.0}
+      SANDBOX_MANAGER_SANDBOX_IMAGE: ${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}
       SANDBOX_MANAGER_DOCKER_RUNTIME: ${SANDBOX_MANAGER_DOCKER_RUNTIME:-runsc}
       SANDBOX_MANAGER_RPC_NETWORK: ${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}
       SANDBOX_MANAGER_EGRESS_NETWORK: ${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}

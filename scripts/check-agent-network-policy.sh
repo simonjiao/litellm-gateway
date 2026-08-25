@@ -12,7 +12,7 @@ fi
 control_network="${CONTROL_NETWORK:-responses-control}"
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
-worker_image="${SANDBOX_MANAGER_IMAGE:-litellm-codex-sandbox-worker:0.3.0}"
+worker_image="${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
 sandbox_runtime="${SANDBOX_MANAGER_DOCKER_RUNTIME:-runsc}"
 worker_port="${SANDBOX_MANAGER_WORKER_PORT:-8091}"
 gateway_host_port="${LITELLM_PORT:-4000}"

@@ -23,7 +23,7 @@ class ManagerSettings(BaseSettings):
         default="local-worker-token-secret-change-me", min_length=32
     )
 
-    image: str = "litellm-codex-sandbox-worker:0.3.0"
+    sandbox_image: str = "codex-sandbox-worker:0.3.0"
     docker_runtime: str = "runsc"
     rpc_network: str = "agent-rpc"
     egress_network: str = "agent-egress"
@@ -47,7 +47,7 @@ class ManagerSettings(BaseSettings):
     codex_config_file: Path | None = None
     mcp_apps_enabled: bool = True
 
-    @field_validator("docker_runtime", "rpc_network", "egress_network", "image")
+    @field_validator("docker_runtime", "rpc_network", "egress_network", "sandbox_image")
     @classmethod
     def non_empty(cls, value: str) -> str:
         value = value.strip()

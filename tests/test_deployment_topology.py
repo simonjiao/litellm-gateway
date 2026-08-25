@@ -5,7 +5,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_compose_deploys_control_plane_as_separate_runc_services() -> None:
+def test_compose_deploys_services_as_separate_runc_images() -> None:
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     services = compose["services"]
 
@@ -13,9 +13,21 @@ def test_compose_deploys_control_plane_as_separate_runc_services() -> None:
     adapter = services["responses-adapter"]
     manager = services["sandbox-manager"]
 
+    common_runtime = compose["x-common-runtime"]
+    assert not {"build", "image", "command", "restart"} & common_runtime.keys()
+    assert gateway["build"]["dockerfile"] == "deploy/gateway/Dockerfile"
+    assert adapter["build"]["dockerfile"] == "deploy/responses-adapter/Dockerfile"
+    assert manager["build"]["dockerfile"] == "deploy/sandbox-manager/Dockerfile"
+    assert gateway["image"] == "${AGENT_GATEWAY_IMAGE:-agent-gateway:0.3.0}"
+    assert adapter["image"] == (
+        "${AGENT_RESPONSES_ADAPTER_IMAGE:-agent-responses-adapter:0.3.0}"
+    )
+    assert manager["image"] == "${AGENT_SANDBOX_MANAGER_IMAGE:-agent-sandbox-manager:0.3.0}"
+
     assert gateway["runtime"] == "runc"
     assert adapter["runtime"] == "runc"
     assert manager["runtime"] == "runc"
+    assert manager["restart"] == "unless-stopped"
     assert set(gateway["networks"]) == {"control"}
     assert set(adapter["networks"]) == {"control", "agent-rpc"}
     assert set(manager["networks"]) == {"control"}
@@ -23,11 +35,28 @@ def test_compose_deploys_control_plane_as_separate_runc_services() -> None:
     assert "ports" not in adapter
     assert "ports" not in manager
     assert manager["environment"]["DOCKER_HOST"] == "unix:///run/sandbox-engine/docker.sock"
+    assert manager["environment"]["SANDBOX_MANAGER_SANDBOX_IMAGE"] == (
+        "${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
+    )
+    assert "SANDBOX_MANAGER_IMAGE" not in manager["environment"]
     assert any(
         "SANDBOX_MANAGER_DOCKER_SOCKET" in volume
         and volume.endswith(":/run/sandbox-engine/docker.sock")
         for volume in manager["volumes"]
     )
+
+
+def test_runtime_images_copy_only_their_required_components() -> None:
+    gateway = (ROOT / "deploy" / "gateway" / "Dockerfile").read_text()
+    adapter = (ROOT / "deploy" / "responses-adapter" / "Dockerfile").read_text()
+    manager = (ROOT / "deploy" / "sandbox-manager" / "Dockerfile").read_text()
+    worker = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
+
+    assert "COPY src" not in gateway
+    assert "COPY src/codex_responses_adapter" in adapter
+    assert "COPY src/sandbox_manager ./src/sandbox_manager" in manager
+    assert "COPY src/sandbox_worker ./src/sandbox_worker" in worker
+    assert all("COPY src ./src" not in dockerfile for dockerfile in (adapter, manager, worker))
 
 
 def test_entry_workload_restart_is_gated_by_host_network_policy() -> None:
@@ -103,15 +132,17 @@ def test_network_policy_has_a_non_sudo_runc_executor() -> None:
     assert "--cap-add NET_ADMIN" in policy
 
 
-def test_control_plane_uses_domestic_registry_except_for_the_missing_litellm_rc() -> None:
+def test_runtime_images_use_domestic_registry_except_for_the_missing_litellm_rc() -> None:
     compose = (ROOT / "compose.yaml").read_text()
-    dockerfile = (ROOT / "deploy" / "control-plane" / "Dockerfile").read_text()
+    gateway = (ROOT / "deploy" / "gateway" / "Dockerfile").read_text()
+    adapter = (ROOT / "deploy" / "responses-adapter" / "Dockerfile").read_text()
+    manager = (ROOT / "deploy" / "sandbox-manager" / "Dockerfile").read_text()
+    worker = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
 
-    assert "CONTROL_PLANE_PYPI_INDEX_URL" in compose
-    assert "ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile
-    assert "ARG LITELLM_INDEX_URL=https://pypi.org/simple" in dockerfile
-    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
-    assert 'PIP_INDEX_URL="${LITELLM_INDEX_URL}"' in dockerfile
-    assert 'pip install --no-deps "litellm==${LITELLM_VERSION}"' in dockerfile
-    assert 'PIP_INDEX_URL="${PYPI_INDEX_URL}"' in dockerfile
-    assert "pip install ." in dockerfile
+    assert "PYPI_INDEX_URL" in compose
+    for dockerfile in (gateway, adapter, manager, worker):
+        assert "ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile
+        assert 'PIP_INDEX_URL="${PYPI_INDEX_URL}"' in dockerfile
+    assert "ARG LITELLM_INDEX_URL=https://pypi.org/simple" in gateway
+    assert 'PIP_INDEX_URL="${LITELLM_INDEX_URL}"' in gateway
+    assert 'pip install --no-deps "litellm==${LITELLM_VERSION}"' in gateway

@@ -91,7 +91,7 @@ bash scripts/build-sandbox-worker.sh
 bash scripts/build-egress-proxy.sh
 bash scripts/build-agent-dns.sh
 bash scripts/build-network-policy.sh
-docker compose build
+docker compose build gateway responses-adapter sandbox-manager
 
 stop_entry_workloads_on_error() {
   docker compose stop gateway responses-adapter >/dev/null 2>&1 || true

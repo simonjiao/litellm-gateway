@@ -9,7 +9,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-sandbox_image="${SANDBOX_MANAGER_IMAGE:-litellm-codex-sandbox-worker:0.3.0}"
+sandbox_image="${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
 codex_version="${CODEX_VERSION:-0.149.0}"
 debian_mirror="${DEBIAN_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian}"
 debian_security_mirror="${DEBIAN_SECURITY_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian-security}"

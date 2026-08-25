@@ -111,10 +111,16 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 ## Docker 参考部署
 
 仓库中的 `compose.yaml` 将 Gateway、Adapter 和 Sandbox Manager 作为独立 `runc` 服务部署，
-只发布 Gateway 端口。Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
+并分别构建独立镜像；公共 Compose 配置只复用运行时加固项。Sandbox Worker 使用第四个独立
+镜像，且只发布 Gateway 端口。Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
 `SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
-准备三个逻辑网络、启动 DNS/策略代理和内部控制面，应用方向性规则后才启动 Gateway：
+准备三个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
+
+默认镜像为 `agent-gateway:0.3.0`、`agent-responses-adapter:0.3.0`、
+`agent-sandbox-manager:0.3.0` 和 `codex-sandbox-worker:0.3.0`；分别通过
+`AGENT_GATEWAY_IMAGE`、`AGENT_RESPONSES_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE` 和
+`SANDBOX_IMAGE` 覆盖。
 
 ```bash
 cp .env.example .env

@@ -15,7 +15,7 @@ def _settings(**overrides: Any) -> ManagerSettings:
     values: dict[str, Any] = {
         "api_key": "manager-secret",
         "worker_token_secret": "worker-token-secret-at-least-32-bytes",
-        "image": "sandbox-worker:test",
+        "sandbox_image": "sandbox-worker:test",
         "docker_runtime": "runsc",
         "rpc_network": "agent-rpc",
         "egress_network": "agent-egress",

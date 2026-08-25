@@ -70,6 +70,10 @@ Agent 的互联网访问默认拒绝，只允许经过 egress-proxy；访问 MCP
 
 ## 运行环境要求
 
+Gateway、Adapter、Sandbox Manager 和 Sandbox Worker 必须使用独立、可单独发布的运行制品，
+每个制品只包含自身职责所需的程序和依赖。构建过程可以共享基础环境与缓存，但不得合并最终
+运行制品。
+
 部署平台必须支持：
 
 - 为不同工作负载选择 OCI runtime；

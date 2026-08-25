@@ -155,7 +155,7 @@ class DockerSandboxBackend:
             await self._create_volumes(sandbox_id)
             container = await asyncio.to_thread(
                 self._docker.containers.create,
-                self._settings.image,
+                self._settings.sandbox_image,
                 **spec,
             )
             egress_network = await asyncio.to_thread(
@@ -242,10 +242,10 @@ class DockerSandboxBackend:
                     f"Docker network '{network_name}' must be internal"
                 )
         try:
-            await asyncio.to_thread(self._docker.images.get, self._settings.image)
+            await asyncio.to_thread(self._docker.images.get, self._settings.sandbox_image)
         except Exception as exc:
             raise SandboxBackendError(
-                f"Sandbox worker image '{self._settings.image}' is unavailable"
+                f"Sandbox image '{self._settings.sandbox_image}' is unavailable"
             ) from exc
 
     def _validate_files(self) -> None:

@@ -11,7 +11,7 @@ fi
 
 sandbox_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 proxy_url="${SANDBOX_MANAGER_EGRESS_PROXY_URL:-http://egress-proxy:3128}"
-worker_image="${SANDBOX_MANAGER_IMAGE:-litellm-codex-sandbox-worker:0.3.0}"
+worker_image="${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
 sandbox_runtime="${SANDBOX_MANAGER_DOCKER_RUNTIME:-runsc}"
 dns_container="${SANDBOX_AGENT_DNS_CONTAINER:-agent-dns}"
 check_script="$(realpath scripts/egress_policy_smoke.py)"

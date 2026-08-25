@@ -18,15 +18,15 @@ RUN sed -i \
 RUN python3 -m venv /opt/worker-venv
 ENV PATH="/opt/worker-venv/bin:${PATH}" \
     HOME=/home/agent \
+    PYTHONPATH=/opt/sandbox-worker/src \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-WORKDIR /opt/gateway
-COPY pyproject.toml README.md ./
-COPY src ./src
+WORKDIR /opt/sandbox-worker
+COPY src/sandbox_api ./src/sandbox_api
+COPY src/sandbox_worker ./src/sandbox_worker
 ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-RUN PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install --no-cache-dir --no-deps . \
-    && PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install --no-cache-dir \
+RUN PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install --no-cache-dir \
       "fastapi>=0.115,<1.0" \
       "pydantic>=2.10,<3.0" \
       "pydantic-settings>=2.7,<3.0" \
@@ -35,11 +35,11 @@ RUN PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install --no-cache-dir --no-deps . \
 RUN groupadd --gid 10001 agent \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin agent \
     && mkdir -p /workspace /home/agent/.codex \
-    && chown -R 10001:10001 /workspace /home/agent /opt/gateway
+    && chown -R 10001:10001 /workspace /home/agent /opt/sandbox-worker
 
 USER 10001:10001
 WORKDIR /workspace
 EXPOSE 8091
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
   CMD python -c "import os, urllib.request; port=os.environ.get('SANDBOX_WORKER_PORT', '8091'); urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=2)"
-ENTRYPOINT ["sandbox-worker"]
+ENTRYPOINT ["python", "-m", "sandbox_worker.cli"]

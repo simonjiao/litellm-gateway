@@ -9,17 +9,18 @@ ENV PYTHONUNBUFFERED=1 \
     HOME=/home/service
 
 WORKDIR /opt/gateway
-COPY pyproject.toml README.md ./
-COPY src ./src
 COPY config ./config
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_DEFAULT_TIMEOUT=60 PIP_INDEX_URL="${LITELLM_INDEX_URL}" \
+    PIP_INDEX_URL="${LITELLM_INDEX_URL}" \
       pip install --no-deps "litellm==${LITELLM_VERSION}" \
-    && PIP_DEFAULT_TIMEOUT=60 PIP_INDEX_URL="${PYPI_INDEX_URL}" \
-      pip install . \
+    && PIP_INDEX_URL="${PYPI_INDEX_URL}" \
+      pip install "litellm[proxy]==${LITELLM_VERSION}" \
     && groupadd --gid 10001 service \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin service \
     && chown -R 10001:10001 /opt/gateway /home/service
 
 USER 10001:10001
+EXPOSE 4000
+ENTRYPOINT ["litellm"]
+CMD ["--config", "/opt/gateway/config/litellm.yaml", "--host", "0.0.0.0", "--port", "4000"]
