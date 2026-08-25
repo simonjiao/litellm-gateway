@@ -23,7 +23,10 @@ class ManagerSettings(BaseSettings):
         default="local-worker-token-secret-change-me", min_length=32
     )
 
-    sandbox_image: str = "codex-sandbox-worker:0.3.0"
+    sandbox_image: str = Field(
+        default="codex-sandbox-worker:0.3.0",
+        validation_alias="SANDBOX_IMAGE",
+    )
     docker_runtime: str = "runsc"
     rpc_network: str = "agent-rpc"
     egress_network: str = "agent-egress"

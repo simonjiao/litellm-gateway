@@ -24,6 +24,14 @@ def _settings(**overrides: Any) -> ManagerSettings:
     return ManagerSettings(**values)
 
 
+def test_manager_reads_sandbox_image_without_renaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SANDBOX_IMAGE", "sandbox-image:test")
+
+    assert ManagerSettings().sandbox_image == "sandbox-image:test"
+
+
 def test_worker_container_spec_enforces_runtime_filesystem_and_network_boundaries() -> None:
     settings = _settings(
         resolv_conf_file=Path("/opt/deployment/resolv.conf"),

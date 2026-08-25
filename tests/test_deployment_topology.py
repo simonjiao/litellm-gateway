@@ -35,10 +35,9 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     assert "ports" not in adapter
     assert "ports" not in manager
     assert manager["environment"]["DOCKER_HOST"] == "unix:///run/sandbox-engine/docker.sock"
-    assert manager["environment"]["SANDBOX_MANAGER_SANDBOX_IMAGE"] == (
+    assert manager["environment"]["SANDBOX_IMAGE"] == (
         "${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
     )
-    assert "SANDBOX_MANAGER_IMAGE" not in manager["environment"]
     assert any(
         "SANDBOX_MANAGER_DOCKER_SOCKET" in volume
         and volume.endswith(":/run/sandbox-engine/docker.sock")
