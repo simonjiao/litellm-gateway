@@ -2,18 +2,18 @@
 
 ## 定位
 
-LiteLLM 提供 Responses 入口、模型路由、认证和通用治理。Responses Adapter 负责
+Gateway 提供 Responses 入口、公共模型目录、路由、认证和通用治理。Adapter 负责
 Responses 协议与 Sandbox Worker 接口之间的转换。Sandbox Manager 只负责 Sandbox
-生命周期，不代理 Agent 数据流。具体 Agent Runtime 的协议适配属于实现级约定，不进入
-本设计的架构接口。
+生命周期，不代理 Agent 数据流。具体产品和 Agent Runtime 的协议适配属于实现级约定，
+不进入本设计的架构接口。
 
 ## 架构
 
 ```text
-Open WebUI / BFF
+Chat UI / BFF
         │ Responses HTTP/SSE
         ▼
-LiteLLM Gateway
+Responses Gateway
         ▼
 Responses Adapter ─── lifecycle / lease ───→ Sandbox Manager
         │                                         │
@@ -29,13 +29,32 @@ Sandbox Worker (runsc) ←────────────── Sandbox Run
 
 | 模块 | 职责 |
 |---|---|
-| Open WebUI | 用户认证、会话、访问控制；通过 Responses API 调用 Gateway |
-| LiteLLM | Responses 入口、模型路由、部署认证和治理 |
-| Adapter | Responses 请求与事件映射、Worker RPC/SSE、MCP Apps 会话绑定 |
+| Chat UI | 用户认证、会话、访问控制；发现并选择 Gateway 发布的模型 |
+| Gateway | Responses 入口、公共模型目录、模型路由、请求默认值、部署认证和治理 |
+| Adapter | Responses 请求、执行参数与事件映射；Worker RPC/SSE；MCP Apps 会话绑定 |
 | Sandbox Manager | 创建、查询、续租和销毁 Sandbox，返回 Worker 连接信息 |
 | Sandbox Worker | 托管 Agent Runtime，提供稳定的 RPC、事件流和短期事件恢复接口 |
 | Sandbox Runtime | 使用 `runsc` 执行 Agent，并落实资源、文件和网络隔离 |
 | MCP Gateway | 独立提供和治理 MCP Server、Tool 与 App |
+
+## 模型与推理参数
+
+Gateway 是公共模型目录的唯一来源。每个目录项绑定稳定的公共模型 ID、Agent Runtime 模型 ID
+以及可选的默认推理参数。Chat UI 通过 Gateway 的模型接口发现公共 ID，并在每个 Responses
+请求的 `model` 字段中发送用户选择；未发布的 ID 由 Gateway 在创建 Sandbox 前拒绝。
+Gateway 对外保持公共模型 ID，解析后的 Runtime 模型 ID 只出现在 Gateway 到 Adapter 的内部
+请求中。
+
+```text
+Chat UI 选择公共模型 ID
+  → Gateway 校验目录、解析 Runtime 模型并合并默认参数
+  → Adapter 在执行请求时下发模型和 reasoning 参数
+  → Sandbox Worker 驱动 Agent Runtime
+```
+
+显式请求参数覆盖目录默认值。模型和推理参数属于 Response 执行，不属于 Sandbox 生命周期；
+Manager 不接收这些参数，Worker 也不维护模型目录或部署级默认值。连续请求复用 Sandbox 时，
+Adapter 仍以本次请求的模型和推理参数启动对应 Thread/Turn。
 
 ## 权限模型
 
@@ -57,7 +76,7 @@ Gateway、Adapter、Manager 和 Worker 使用相互独立的部署凭证。每�
 
 | 网络域 | 成员 | 约束 |
 |---|---|---|
-| control | Open WebUI、Gateway、Adapter、Sandbox Manager、同栈 BFF | 普通工作负载网络，使用平台默认外网能力 |
+| control | Chat UI、Gateway、Adapter、Sandbox Manager、同栈 BFF | 普通工作负载网络，使用平台默认外网能力 |
 | agent-rpc | Adapter、Sandbox Worker | 仅允许 Adapter 向 Worker 发起 RPC/SSE 连接 |
 | agent-egress | Worker、DNS、egress-proxy、获准内部接口 | Agent 无默认互联网路由 |
 | egress-uplink | egress-proxy | 提供策略代理的外部出口 |

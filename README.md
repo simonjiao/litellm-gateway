@@ -10,6 +10,7 @@ Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
 
 - Gateway、Adapter 与 Sandbox Manager 使用普通 `runc` 容器。
 - Open WebUI 使用普通 `runc` 容器，并通过 Responses API 连接 Gateway。
+- Gateway 发布允许使用的模型目录，Open WebUI 动态发现并在聊天中选择。
 - Gateway、Adapter、Sandbox Manager 与 Sandbox Worker 使用独立运行镜像。
 - Sandbox Manager 只管理 Sandbox 生命周期。
 - Adapter 直接与 Sandbox Worker 通信。
@@ -42,5 +43,5 @@ npm --prefix frontend/mcp-apps-host run check
 npm --prefix frontend/mcp-apps-host run build
 ```
 
-Docker 参考部署启动后，Open WebUI 默认位于 `http://127.0.0.1:3000`，模型为
-`codex-app-server`。首次注册的用户成为管理员。
+Docker 参考部署启动后，Open WebUI 默认位于 `http://127.0.0.1:3000`；可在聊天输入区
+选择 Gateway 发布的模型。首次注册的用户成为管理员。

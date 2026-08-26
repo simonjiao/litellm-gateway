@@ -1,6 +1,6 @@
 # Responses、Codex app-server 与 MCP Apps 协议映射
 
-本文描述当前 Codex Sandbox Worker 的实现级协议，不定义上层架构接口。
+本文描述 Codex Sandbox Worker 的实现级协议，不定义上层架构接口。
 
 Adapter 通过 Sandbox Manager 创建、查询、续租和销毁 Sandbox，并直接连接 Sandbox
 Worker 驱动 `codex app-server`。生命周期接口不承载 Agent RPC/SSE，也不改变 Responses
@@ -8,7 +8,7 @@ Worker 驱动 `codex app-server`。生命周期接口不承载 Agent RPC/SSE，�
 
 ## Sandbox 执行策略
 
-当前 Worker 启动 Codex 会话时使用：
+Worker 启动 Codex 会话时使用：
 
 ```json
 {
@@ -24,7 +24,7 @@ Worker 驱动 `codex app-server`。生命周期接口不承载 Agent RPC/SSE，�
 
 ## Responses 能力表
 
-| 能力 | LiteLLM | 本版端到端 | 约束 |
+| 能力 | LiteLLM | Adapter | 约束 |
 |---|---|---|---|
 | `POST /v1/responses`, `stream=false` | 路由/转换 | 支持 | 等待 Codex Turn 终态 |
 | `stream=true` Responses SSE | 路由/转换 | 支持 | 文本、message、`mcp_call` 事件子集 |
@@ -45,15 +45,20 @@ MCP Apps 的资源、interaction 和 side-event 是本项目扩展；`mcp_call` 
 
 ## 请求映射
 
+LiteLLM 根据公共模型目录完成准入和路由，并将解析后的 Codex 模型放入上游 Responses
+`model` 字段。Adapter 不维护公共别名映射或全局模型覆盖；Manager 和 Worker 的生命周期
+配置不包含模型或 effort。
+
 | Responses 字段 | app-server | 处理 |
 |---|---|---|
-| `model` | Thread model | 逻辑模型由 LiteLLM 路由；实际 Codex model 可由部署配置 |
+| `model` | `thread/start.model`、`thread/fork.model` | 直接使用 Gateway 解析后的 Codex 模型 |
 | `input: string` / input_text | `turn/start.input[].type=text` | 映射为当前 Turn 输入 |
 | input_image URL | `UserInput.Image` | 透传 URL 与 detail |
 | function_call_output | `UserInput.Text` | 带 call ID 的文本输入，不实现函数工具循环 |
 | `instructions` | `developerInstructions` | thread start/fork |
 | `metadata` | ResponseRecord | 仅保存在 Adapter |
-| `reasoning.effort/summary` | turn start | 透传 |
+| `reasoning.effort` | `turn/start.effort` | 显式值覆盖 Gateway 目录默认值 |
+| `reasoning.summary` | `turn/start.summary` | 透传 |
 | `service_tier` | Thread/Turn `serviceTier` | 透传 |
 | `previous_response_id` | `thread/fork` | 使用前一 Thread/Turn 与同一 Agent Session |
 | `stream` | Responses SSE | app-server notification 转事件 |
