@@ -17,6 +17,7 @@
 
 | 工作负载 | Runtime | 网络域 | 特殊权限 |
 |---|---|---|---|
+| Open WebUI | `runc` | control | 无 |
 | LiteLLM Gateway | `runc` | control | 无 |
 | Responses Adapter | `runc` | control、agent-rpc | 无 |
 | Sandbox Manager | `runc` | control | Sandbox 工作负载生命周期权限 |
@@ -24,8 +25,8 @@
 | agent-dns | `runc` | agent-egress | 无 |
 | egress-proxy | `runc` | agent-egress、egress-uplink | 无 |
 
-只有 Gateway 暴露 Responses 入口。BFF 如需代理 MCP Apps，加入 control 或通过等价私网
-访问 Adapter。Adapter、Manager 和 Worker 不暴露公共端口。
+Open WebUI 暴露用户界面，Gateway 暴露 Responses 入口。BFF 如需代理 MCP Apps，加入
+control 或通过等价私网访问 Adapter。Adapter、Manager 和 Worker 不暴露公共端口。
 
 ## 服务发现
 
@@ -33,6 +34,7 @@
 架构常量：
 
 ```text
+Open WebUI → gateway.<control-domain>:<gateway-port>
 Gateway  → responses-adapter.<control-domain>:<responses-port>
 BFF      → responses-adapter.<control-domain>:<apps-port>
 Adapter  → sandbox-manager.<control-domain>:<lifecycle-port>
@@ -110,9 +112,10 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 
 ## Docker 参考部署
 
-仓库中的 `compose.yaml` 将 Gateway、Adapter 和 Sandbox Manager 作为独立 `runc` 服务部署，
-并分别构建独立镜像；公共 Compose 配置只复用运行时加固项。Sandbox Worker 使用第四个独立
-镜像，且只发布 Gateway 端口。Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
+仓库中的 `compose.yaml` 将 Open WebUI、Gateway、Adapter 和 Sandbox Manager 作为独立
+`runc` 服务部署；Gateway、Adapter 和 Manager 分别构建独立镜像，Open WebUI 使用固定版本的
+上游镜像。公共 Compose 配置只复用运行时加固项。Sandbox Worker 使用第四个本项目镜像。
+Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
 `SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
 准备三个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
@@ -122,6 +125,11 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 `AGENT_GATEWAY_IMAGE`、`AGENT_RESPONSES_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE` 和
 `SANDBOX_IMAGE` 覆盖。
 
+Open WebUI 默认为 `ghcr.io/open-webui/open-webui:v0.11.1`，通过 `OPEN_WEBUI_IMAGE` 覆盖；
+默认发布到宿主端口 `3000`，数据保存在命名卷 `open-webui-data`。它预配置
+`http://gateway:4000/v1` 为 Responses 类型连接，并只显示 `codex-app-server`。首次注册用户
+成为管理员，之后公开注册关闭。`OPEN_WEBUI_SECRET_KEY` 必须是独立、稳定的随机 Secret。
+
 网络配套镜像默认为 `agent-egress-proxy:0.1.0`、`agent-dns:0.1.0` 和
 `agent-network-policy:0.1.0`；分别通过 `AGENT_EGRESS_PROXY_IMAGE`、`AGENT_DNS_IMAGE` 和
 `AGENT_NETWORK_POLICY_IMAGE` 覆盖。
@@ -130,6 +138,10 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 cp .env.example .env
 bash scripts/run-stack.sh
 ```
+
+该参考部署完成标准 Responses 聊天接入。MCP Apps 仍需将
+`frontend/mcp-apps-host` 接入 Open WebUI 消息渲染，并由同源 BFF 代理 Adapter 的
+`/v1/mcp-apps/*` 接口。
 
 默认复用 `$CODEX_HOME/auth.json`（未设置时为 `$HOME/.codex/auth.json`）。脚本将认证副本放入
 忽略版本控制且权限为 `0700` 的 Secret 根目录，再只读注入 Worker；不会把认证写入镜像。

@@ -11,6 +11,38 @@ x-common-runtime: &common-runtime
     - /tmp:rw,noexec,nosuid,nodev,size=64m
 
 services:
+  open-webui:
+    <<: *common-runtime
+    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.1}
+    restart: unless-stopped
+    environment:
+      OPENAI_API_BASE_URL: http://gateway:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+      OPENAI_API_CONFIGS: '{"0":{"api_type":"responses","model_ids":["codex-app-server"]}}'
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_SIGNUP: "false"
+      ENABLE_RESPONSES_API_STATEFUL: "true"
+      WEBUI_SECRET_KEY: ${OPEN_WEBUI_SECRET_KEY:?set OPEN_WEBUI_SECRET_KEY}
+    ports:
+      - ${OPEN_WEBUI_PORT:-3000}:8080
+    volumes:
+      - open-webui-data:/app/backend/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - control
+
   gateway:
     <<: *common-runtime
     build:
@@ -145,3 +177,7 @@ networks:
   agent-rpc:
     external: true
     name: ${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}
+
+volumes:
+  open-webui-data:
+    name: ${OPEN_WEBUI_DATA_VOLUME:-open-webui-data}

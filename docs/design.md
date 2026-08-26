@@ -29,7 +29,7 @@ Sandbox Worker (runsc) ←────────────── Sandbox Run
 
 | 模块 | 职责 |
 |---|---|
-| Open WebUI | 用户认证、会话、访问控制和 MCP Apps Host |
+| Open WebUI | 用户认证、会话、访问控制；通过 Responses API 调用 Gateway |
 | LiteLLM | Responses 入口、模型路由、部署认证和治理 |
 | Adapter | Responses 请求与事件映射、Worker RPC/SSE、MCP Apps 会话绑定 |
 | Sandbox Manager | 创建、查询、续租和销毁 Sandbox，返回 Worker 连接信息 |
@@ -57,7 +57,7 @@ Gateway、Adapter、Manager 和 Worker 使用相互独立的部署凭证。每�
 
 | 网络域 | 成员 | 约束 |
 |---|---|---|
-| control | Gateway、Adapter、Sandbox Manager、同栈 BFF | 普通工作负载网络，使用平台默认外网能力 |
+| control | Open WebUI、Gateway、Adapter、Sandbox Manager、同栈 BFF | 普通工作负载网络，使用平台默认外网能力 |
 | agent-rpc | Adapter、Sandbox Worker | 仅允许 Adapter 向 Worker 发起 RPC/SSE 连接 |
 | agent-egress | Worker、DNS、egress-proxy、获准内部接口 | Agent 无默认互联网路由 |
 | egress-uplink | egress-proxy | 提供策略代理的外部出口 |

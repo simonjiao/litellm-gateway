@@ -45,6 +45,34 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     )
 
 
+def test_compose_deploys_open_webui_as_the_responses_client() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    webui = compose["services"]["open-webui"]
+
+    assert webui["image"] == (
+        "${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.1}"
+    )
+    assert webui["runtime"] == "runc"
+    assert set(webui["networks"]) == {"control"}
+    assert webui["ports"] == ["${OPEN_WEBUI_PORT:-3000}:8080"]
+    assert webui["environment"]["OPENAI_API_BASE_URL"] == "http://gateway:4000/v1"
+    assert webui["environment"]["OPENAI_API_KEY"] == "${LITELLM_MASTER_KEY}"
+    assert webui["environment"]["OPENAI_API_CONFIGS"] == (
+        '{"0":{"api_type":"responses","model_ids":["codex-app-server"]}}'
+    )
+    assert webui["environment"]["ENABLE_OLLAMA_API"] == "false"
+    assert webui["environment"]["ENABLE_SIGNUP"] == "false"
+    assert webui["environment"]["ENABLE_RESPONSES_API_STATEFUL"] == "true"
+    assert webui["environment"]["WEBUI_SECRET_KEY"] == (
+        "${OPEN_WEBUI_SECRET_KEY:?set OPEN_WEBUI_SECRET_KEY}"
+    )
+    assert webui["depends_on"]["gateway"]["condition"] == "service_healthy"
+    assert webui["volumes"] == ["open-webui-data:/app/backend/data"]
+    assert compose["volumes"]["open-webui-data"]["name"] == (
+        "${OPEN_WEBUI_DATA_VOLUME:-open-webui-data}"
+    )
+
+
 def test_runtime_images_copy_only_their_required_components() -> None:
     gateway = (ROOT / "deploy" / "gateway" / "Dockerfile").read_text()
     adapter = (ROOT / "deploy" / "responses-adapter" / "Dockerfile").read_text()

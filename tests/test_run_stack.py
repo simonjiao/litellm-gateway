@@ -33,6 +33,7 @@ def _run_stack(
     (runtime_dns / "resolv.conf").write_text("nameserver 172.30.0.2\n")
     (project / ".env").write_text(
         "LITELLM_MASTER_KEY=gateway-test-key\n"
+        "OPEN_WEBUI_SECRET_KEY=open-webui-test-key-at-least-32-bytes\n"
         "CODEX_ADAPTER_API_KEY=adapter-test-key\n"
         "SANDBOX_MANAGER_API_KEY=manager-test-key\n"
         "SANDBOX_MANAGER_WORKER_TOKEN_SECRET=worker-token-secret-at-least-32-bytes\n"
@@ -82,7 +83,7 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
     stop_gateway = next(
         index
         for index, action in enumerate(actions)
-        if action == "docker compose stop gateway responses-adapter"
+        if action == "docker compose stop open-webui gateway responses-adapter"
     )
     start_control = next(
         index
@@ -104,6 +105,35 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
     )
 
     assert stop_gateway < start_control < apply_rpc < apply_egress < start_gateway
+
+
+def test_stack_exposes_open_webui_only_after_gateway_is_ready(tmp_path: Path) -> None:
+    result, action_log, _ = _run_stack(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    actions = action_log.read_text().splitlines()
+    stop_entrypoints = actions.index(
+        "docker compose stop open-webui gateway responses-adapter"
+    )
+    apply_egress = actions.index("bash scripts/apply-agent-egress-policy.sh")
+    start_gateway = next(
+        index
+        for index, action in enumerate(actions)
+        if action.startswith("docker compose up ")
+        and "gateway" in action
+        and "open-webui" not in action
+        and "sandbox-manager" not in action
+        and "responses-adapter" not in action
+    )
+    start_webui = next(
+        index
+        for index, action in enumerate(actions)
+        if action.startswith("docker compose up ")
+        and "open-webui" in action
+        and "gateway" not in action
+    )
+
+    assert stop_entrypoints < apply_egress < start_gateway < start_webui
 
 
 def test_stack_rejects_a_secret_root_visible_to_other_host_users(tmp_path: Path) -> None:
@@ -133,6 +163,6 @@ def test_stack_stops_entry_workloads_when_policy_application_fails(
     failed_policy = actions.index("bash scripts/apply-agent-egress-policy.sh")
     assert any(
         index > failed_policy
-        and action == "docker compose stop gateway responses-adapter"
+        and action == "docker compose stop open-webui gateway responses-adapter"
         for index, action in enumerate(actions)
     )

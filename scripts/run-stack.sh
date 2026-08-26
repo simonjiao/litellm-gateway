@@ -19,6 +19,7 @@ source scripts/lib/internal-services.sh
 : "${CODEX_ADAPTER_API_KEY:?CODEX_ADAPTER_API_KEY is required}"
 : "${SANDBOX_MANAGER_API_KEY:?SANDBOX_MANAGER_API_KEY is required}"
 : "${SANDBOX_MANAGER_WORKER_TOKEN_SECRET:?SANDBOX_MANAGER_WORKER_TOKEN_SECRET is required}"
+: "${OPEN_WEBUI_SECRET_KEY:?OPEN_WEBUI_SECRET_KEY is required}"
 
 project_root="$(pwd)"
 runtime_root="${project_root}/.runtime"
@@ -94,11 +95,11 @@ bash scripts/build-network-policy.sh
 docker compose build gateway responses-adapter sandbox-manager
 
 stop_entry_workloads_on_error() {
-  docker compose stop gateway responses-adapter >/dev/null 2>&1 || true
+  docker compose stop open-webui gateway responses-adapter >/dev/null 2>&1 || true
 }
 trap stop_entry_workloads_on_error ERR
 
-docker compose stop gateway responses-adapter
+docker compose stop open-webui gateway responses-adapter
 bash scripts/run-egress-proxy.sh
 bash scripts/run-agent-dns.sh
 
@@ -113,6 +114,8 @@ bash scripts/apply-agent-rpc-policy.sh
 bash scripts/apply-agent-egress-policy.sh
 docker compose up --detach --wait --wait-timeout 120 --force-recreate --no-deps \
   gateway
+docker compose up --detach --wait --wait-timeout 180 --force-recreate --no-deps \
+  open-webui
 trap - ERR
 
-echo "Gateway, Responses Adapter, Sandbox Manager, Agent DNS, and policy egress are ready."
+echo "Open WebUI, Gateway, Responses Adapter, Sandbox Manager, Agent DNS, and policy egress are ready."
