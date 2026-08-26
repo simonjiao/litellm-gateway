@@ -147,10 +147,10 @@ bash scripts/run-stack.sh
 忽略版本控制且权限为 `0700` 的 Secret 根目录，再只读注入 Worker；不会把认证写入镜像。
 自定义 `SANDBOX_MANAGER_SECRET_ROOT` 也必须由部署用户拥有且权限为 `0700`。
 
-Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或宿主重启、Adapter/DNS/代理/内部服务
-变化后，必须再次执行 `run-stack.sh`；脚本重建 Manager 和 Adapter、清理现有 Worker、原子
-恢复策略，失败时保持 Gateway 和 Adapter 停止。因此部署操作会结束活动 Sandbox，并清除
-Adapter 的单进程内存状态。
+Open WebUI、Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或宿主重启、
+Adapter/DNS/代理/内部服务变化后，必须再次执行 `run-stack.sh`；脚本重建 Manager 和
+Adapter、清理现有 Worker、原子恢复策略，失败时保持 Open WebUI、Gateway 和 Adapter
+停止。因此部署操作会结束活动 Sandbox，并清除 Adapter 的单进程内存状态。
 
 ## 验收
 

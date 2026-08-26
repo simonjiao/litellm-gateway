@@ -80,7 +80,7 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     actions = action_log.read_text().splitlines()
-    stop_gateway = next(
+    stop_entry_workloads = next(
         index
         for index, action in enumerate(actions)
         if action == "docker compose stop open-webui gateway responses-adapter"
@@ -104,7 +104,7 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
         and "responses-adapter" not in action
     )
 
-    assert stop_gateway < start_control < apply_rpc < apply_egress < start_gateway
+    assert stop_entry_workloads < start_control < apply_rpc < apply_egress < start_gateway
 
 
 def test_stack_exposes_open_webui_only_after_gateway_is_ready(tmp_path: Path) -> None:

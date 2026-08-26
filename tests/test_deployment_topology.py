@@ -53,6 +53,7 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
         "${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.1}"
     )
     assert webui["runtime"] == "runc"
+    assert webui["restart"] == "no"
     assert set(webui["networks"]) == {"control"}
     assert webui["ports"] == ["${OPEN_WEBUI_PORT:-3000}:8080"]
     assert webui["environment"]["OPENAI_API_BASE_URL"] == "http://gateway:4000/v1"

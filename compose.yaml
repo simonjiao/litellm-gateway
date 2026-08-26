@@ -14,7 +14,7 @@ services:
   open-webui:
     <<: *common-runtime
     image: ${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.1}
-    restart: unless-stopped
+    restart: "no"
     environment:
       OPENAI_API_BASE_URL: http://gateway:4000/v1
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
