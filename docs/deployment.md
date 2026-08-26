@@ -128,7 +128,8 @@ Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
 Open WebUI 默认为 `ghcr.io/open-webui/open-webui:v0.11.1`，通过 `OPEN_WEBUI_IMAGE` 覆盖；
 默认发布到宿主端口 `3000`，数据保存在命名卷 `open-webui-data`。它预配置
 `http://gateway:4000/v1` 为 Responses 类型连接，并只显示 `codex-app-server`。首次注册用户
-成为管理员，之后公开注册关闭。`OPEN_WEBUI_SECRET_KEY` 必须是独立、稳定的随机 Secret。
+成为管理员，之后公开注册关闭。Open WebUI 内置工具注入默认关闭；Agent 工具仍由 Codex
+和 MCP Gateway 管理。`OPEN_WEBUI_SECRET_KEY` 必须是独立、稳定的随机 Secret。
 
 网络配套镜像默认为 `agent-egress-proxy:0.1.0`、`agent-dns:0.1.0` 和
 `agent-network-policy:0.1.0`；分别通过 `AGENT_EGRESS_PROXY_IMAGE`、`AGENT_DNS_IMAGE` 和

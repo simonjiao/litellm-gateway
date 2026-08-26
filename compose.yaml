@@ -22,6 +22,7 @@ services:
       ENABLE_OLLAMA_API: "false"
       ENABLE_SIGNUP: "false"
       ENABLE_RESPONSES_API_STATEFUL: "true"
+      DEFAULT_MODEL_METADATA: '{"capabilities":{"builtin_tools":false}}'
       WEBUI_SECRET_KEY: ${OPEN_WEBUI_SECRET_KEY:?set OPEN_WEBUI_SECRET_KEY}
     ports:
       - ${OPEN_WEBUI_PORT:-3000}:8080

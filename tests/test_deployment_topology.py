@@ -64,6 +64,9 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
     assert webui["environment"]["ENABLE_OLLAMA_API"] == "false"
     assert webui["environment"]["ENABLE_SIGNUP"] == "false"
     assert webui["environment"]["ENABLE_RESPONSES_API_STATEFUL"] == "true"
+    assert webui["environment"]["DEFAULT_MODEL_METADATA"] == (
+        '{"capabilities":{"builtin_tools":false}}'
+    )
     assert webui["environment"]["WEBUI_SECRET_KEY"] == (
         "${OPEN_WEBUI_SECRET_KEY:?set OPEN_WEBUI_SECRET_KEY}"
     )
