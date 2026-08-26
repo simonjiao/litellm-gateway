@@ -28,18 +28,6 @@
 Open WebUI 暴露用户界面，Gateway 暴露 Responses 入口。BFF 如需代理 MCP Apps，加入
 control 或通过等价私网访问 Adapter。Adapter、Manager 和 Worker 不暴露公共端口。
 
-## 模型目录
-
-Gateway 配置是公共模型目录的唯一来源，并通过 `/v1/models` 发布允许使用的公共 ID。
-每个目录项必须定义公共 ID 到 Agent Runtime 模型 ID 的映射，可以同时定义默认
-`reasoning.effort`。Chat UI 动态读取该目录，不维护第二份模型列表；每个请求都将用户选择放入
-标准 Responses `model` 字段。显式 `reasoning.effort` 覆盖目录默认值。
-
-Gateway 在调用 Adapter 前完成模型准入、路由和默认值合并，并在外部 Response 中保持公共
-模型 ID。Adapter 将解析后的模型用于 Agent Runtime Thread，将 `reasoning.effort` 用于 Turn。
-Adapter 配置不提供全局模型覆盖；模型和推理参数不得作为 Manager 生命周期参数、Worker
-环境变量或 Sandbox 镜像配置。
-
 ## 服务发现
 
 配置只使用 DNS 服务名，不固定 IP。下面的名称和端口均为部署时分配的逻辑标识，不是
@@ -127,7 +115,7 @@ Response 不保持无限租约。Sandbox 过期后，`previous_response_id` 和 
 仓库中的 `compose.yaml` 将 Open WebUI、Gateway、Adapter 和 Sandbox Manager 作为独立
 `runc` 服务部署；Gateway、Adapter 和 Manager 分别构建独立镜像，Open WebUI 使用固定版本的
 上游镜像。公共 Compose 配置只复用运行时加固项。Sandbox Worker 使用第四个本项目镜像。
-Manager 通过 Docker socket 创建 `runsc` Worker；Compose 通过
+Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
 `SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
 准备三个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
@@ -140,29 +128,24 @@ Manager 通过 Docker socket 创建 `runsc` Worker；Compose 通过
 Open WebUI 默认为 `ghcr.io/open-webui/open-webui:v0.11.1`，通过 `OPEN_WEBUI_IMAGE` 覆盖；
 默认发布到宿主端口 `3000`，数据保存在命名卷 `open-webui-data`。它将
 `http://gateway:4000/v1` 配置为 Responses 连接，不设置连接级 `model_ids`，因此模型选择器
-直接使用 Gateway 发布的目录。参考目录为：
+直接使用 Gateway 发布的目录。`config/litellm.yaml` 中的参考目录为：
 
-| 公共模型 ID | Gateway 路由 | Adapter 接收模型 | 默认 effort |
-|---|---|---|---|
-| `codex-sol` | `openai/gpt-5.6-sol` | `gpt-5.6-sol` | `medium` |
-| `codex-terra` | `openai/gpt-5.6-terra` | `gpt-5.6-terra` | `medium` |
-| `codex-luna` | `openai/gpt-5.6-luna` | `gpt-5.6-luna` | `medium` |
+| 公共模型 ID | Gateway 路由 |
+|---|---|
+| `codex-sol` | `openai/gpt-5.6-sol` |
+| `codex-terra` | `openai/gpt-5.6-terra` |
+| `codex-luna` | `openai/gpt-5.6-luna` |
 
-`config/litellm.yaml` 中，`model_name` 是公共 ID，`litellm_params.model` 是 Gateway 路由，
-`reasoning_effort` 是目录默认值。三个模型使用相同默认值，使模型选择与推理强度保持独立；
-用户显式值可选 `none`、`low`、`medium`、`high`、`xhigh` 或 `max`。
+`model_name` 是公共模型 ID，`litellm_params.model` 是 Gateway 路由。
 
 Open WebUI 的部署配置为：
 
 ```yaml
 OPENAI_API_CONFIGS: '{"0":{"api_type":"responses"}}'
 DEFAULT_MODELS: codex-terra
-ENABLE_PERSISTENT_CONFIG: "false"
 ```
 
-用户在聊天输入区的模型选择器切换模型，并可通过 Chat Controls 的 Advanced Parameters 设置
-`Reasoning Effort`；Open WebUI 将其作为 `reasoning_effort` 发送，Gateway 规范化为 Responses
-`reasoning.effort`。无需修改前端。连接配置由部署环境管理，不从 Open WebUI 数据库恢复。
+用户在聊天输入区的模型选择器切换模型，无需修改前端。
 
 首次注册用户成为管理员，之后公开注册关闭。Open WebUI 内置工具注入默认关闭；Agent 工具仍由
 Codex 和 MCP Gateway 管理。`OPEN_WEBUI_SECRET_KEY` 必须是独立、稳定的随机 Secret。
@@ -200,10 +183,6 @@ Adapter、清理现有 Worker、原子恢复策略，失败时保持 Open WebUI�
 - Gateway 模型接口只返回已发布的公共 ID，Open WebUI 显示相同目录；未发布模型在创建
   Sandbox 前被拒绝。
 - 每个公共模型 ID 均路由到对应 Agent Runtime 模型，对外 Response 保持公共 ID。
-- 显式 effort 覆盖默认值并到达 Turn。
-- Agent Runtime 认证可以实际使用每个已发布模型。
-- Adapter 无全局模型覆盖；Manager 生命周期请求、Worker 环境和 Sandbox 镜像不包含模型目录
-  或推理默认值。
 
 Docker 参考部署执行：
 

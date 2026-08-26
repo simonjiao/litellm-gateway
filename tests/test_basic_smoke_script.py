@@ -11,13 +11,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_MODELS = ("codex-sol", "codex-terra", "codex-luna")
 
 
 class _UnverifiedResponseHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        payload = json.dumps(
+            {"data": [{"id": model, "object": "model"} for model in EXPECTED_MODELS]}
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_POST(self) -> None:  # noqa: N802
         content_length = int(self.headers["Content-Length"])
-        self.rfile.read(content_length)
-        payload = json.dumps({"output_text": "request completed"}).encode()
+        request = json.loads(self.rfile.read(content_length))
+        payload = json.dumps(
+            {"model": request["model"], "output_text": "request completed"}
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -35,7 +48,7 @@ class _VerifiedResponseHandler(_UnverifiedResponseHandler):
         match = re.search(r"'([0-9a-f]{32})' \| sha256sum", request["input"])
         assert match is not None
         digest = hashlib.sha256(match.group(1).encode()).hexdigest()
-        payload = json.dumps({"output_text": digest}).encode()
+        payload = json.dumps({"model": request["model"], "output_text": digest}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))

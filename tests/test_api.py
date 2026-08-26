@@ -28,7 +28,7 @@ async def test_non_streaming_and_previous_response(settings: Settings) -> None:
         ) as client:
             first = await client.post(
                 "/v1/responses",
-                json={"model": "codex-app-server", "input": "say hello"},
+                json={"model": "gpt-5.6-terra", "input": "say hello"},
             )
             assert first.status_code == 200, first.text
             first_body = first.json()
@@ -38,7 +38,7 @@ async def test_non_streaming_and_previous_response(settings: Settings) -> None:
             second = await client.post(
                 "/v1/responses",
                 json={
-                    "model": "codex-app-server",
+                    "model": "gpt-5.6-terra",
                     "input": "continue",
                     "previous_response_id": first_body["id"],
                 },
@@ -71,7 +71,7 @@ async def test_streaming_response(settings: Settings) -> None:
         ) as client:
             response = await client.post(
                 "/v1/responses",
-                json={"model": "codex-app-server", "input": "say hello", "stream": True},
+                json={"model": "gpt-5.6-terra", "input": "say hello", "stream": True},
             )
             assert response.status_code == 200
             events = []
@@ -96,7 +96,7 @@ async def test_rejects_unmapped_tools(settings: Settings) -> None:
             response = await client.post(
                 "/v1/responses",
                 json={
-                    "model": "codex-app-server",
+                    "model": "gpt-5.6-terra",
                     "input": "hello",
                     "tools": [{"type": "function", "name": "x", "parameters": {}}],
                 },
@@ -117,7 +117,7 @@ async def test_rejects_unenforced_parameters(settings: Settings) -> None:
             max_tokens = await client.post(
                 "/v1/responses",
                 json={
-                    "model": "codex-app-server",
+                    "model": "gpt-5.6-terra",
                     "input": "hello",
                     "max_output_tokens": 128,
                 },
@@ -128,7 +128,7 @@ async def test_rejects_unenforced_parameters(settings: Settings) -> None:
             unknown = await client.post(
                 "/v1/responses",
                 json={
-                    "model": "codex-app-server",
+                    "model": "gpt-5.6-terra",
                     "input": "hello",
                     "temperature": 0.2,
                 },
@@ -149,7 +149,7 @@ async def test_streaming_validation_fails_before_sse_start(settings: Settings) -
             response = await client.post(
                 "/v1/responses",
                 json={
-                    "model": "codex-app-server",
+                    "model": "gpt-5.6-terra",
                     "input": "hello",
                     "stream": True,
                     "tools": [{"type": "function", "name": "x", "parameters": {}}],
@@ -186,7 +186,7 @@ async def test_adapter_requires_deployment_bearer_credential(settings: Settings)
         ) as client:
             response = await client.post(
                 "/v1/responses",
-                json={"model": "codex-app-server", "input": "hello"},
+                json={"model": "gpt-5.6-terra", "input": "hello"},
             )
             assert response.status_code == 401
             assert response.json()["error"]["code"] == "invalid_api_key"

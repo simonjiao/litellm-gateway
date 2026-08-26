@@ -18,7 +18,8 @@ services:
     environment:
       OPENAI_API_BASE_URL: http://gateway:4000/v1
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
-      OPENAI_API_CONFIGS: '{"0":{"api_type":"responses","model_ids":["codex-app-server"]}}'
+      OPENAI_API_CONFIGS: '{"0":{"api_type":"responses"}}'
+      DEFAULT_MODELS: codex-terra
       ENABLE_OLLAMA_API: "false"
       ENABLE_SIGNUP: "false"
       ENABLE_RESPONSES_API_STATEFUL: "true"

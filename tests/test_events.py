@@ -5,7 +5,7 @@ from codex_responses_adapter.models import CreateResponseRequest, ResponseRecord
 
 
 def test_maps_agent_text_and_completion() -> None:
-    request = CreateResponseRequest(model="codex-app-server", input="hello")
+    request = CreateResponseRequest(model="gpt-5.6-terra", input="hello")
     record = ResponseRecord.create(request, [])
     builder = ResponsesEventBuilder(record)
 
@@ -44,7 +44,7 @@ def test_maps_agent_text_and_completion() -> None:
 
 
 def test_maps_mcp_app_call_to_standard_responses_events() -> None:
-    request = CreateResponseRequest(model="codex-app-server", input="edit image", stream=True)
+    request = CreateResponseRequest(model="gpt-5.6-terra", input="edit image", stream=True)
     record = ResponseRecord.create(
         request,
         [],

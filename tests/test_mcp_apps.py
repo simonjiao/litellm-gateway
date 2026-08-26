@@ -42,7 +42,7 @@ async def test_mcp_app_interaction_resource_and_tool_bridge(
     async with app.router.lifespan_context(app):
         service = app.state.service
         request = CreateResponseRequest(
-            model="codex-app-server",
+            model="gpt-5.6-terra",
             input="Open the MCP App image editor",
             stream=True,
         )
@@ -180,7 +180,7 @@ async def test_non_streaming_mcp_app_elicitation_fails_closed(
         response = await asyncio.wait_for(
             app.state.service.create_non_streaming(
                 CreateResponseRequest(
-                    model="codex-app-server",
+                    model="gpt-5.6-terra",
                     input="Open the MCP App image editor",
                     stream=False,
                 )

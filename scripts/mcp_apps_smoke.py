@@ -12,7 +12,7 @@ import httpx
 def main() -> None:
     base_url = os.getenv("LITELLM_BASE_URL", "http://127.0.0.1:4000/v1").rstrip("/")
     request = {
-        "model": "codex-app-server",
+        "model": "codex-terra",
         "input": "Open the configured image-editing MCP App and modify the selected area.",
         "stream": True,
     }

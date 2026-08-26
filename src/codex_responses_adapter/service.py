@@ -554,6 +554,7 @@ class CodexResponsesService:
         previous: ResponseRecord | None,
     ) -> str:
         common = self._thread_common(
+            model=request.model,
             developer_instructions=mapped.developer_instructions,
             service_tier=request.service_tier,
         )
@@ -598,15 +599,15 @@ class CodexResponsesService:
     def _thread_common(
         self,
         *,
+        model: str,
         developer_instructions: str | None = None,
         service_tier: str | None = None,
     ) -> dict[str, Any]:
         common: dict[str, Any] = {
             "cwd": self._settings.agent_workspace,
             "approvalPolicy": "never",
+            "model": self._settings.codex_model or model,
         }
-        if self._settings.codex_model:
-            common["model"] = self._settings.codex_model
         if service_tier:
             common["serviceTier"] = service_tier
         if developer_instructions:

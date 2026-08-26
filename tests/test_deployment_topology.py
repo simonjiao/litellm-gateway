@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import yaml
@@ -58,9 +59,10 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
     assert webui["ports"] == ["${OPEN_WEBUI_PORT:-3000}:8080"]
     assert webui["environment"]["OPENAI_API_BASE_URL"] == "http://gateway:4000/v1"
     assert webui["environment"]["OPENAI_API_KEY"] == "${LITELLM_MASTER_KEY}"
-    assert webui["environment"]["OPENAI_API_CONFIGS"] == (
-        '{"0":{"api_type":"responses","model_ids":["codex-app-server"]}}'
-    )
+    assert json.loads(webui["environment"]["OPENAI_API_CONFIGS"]) == {
+        "0": {"api_type": "responses"}
+    }
+    assert webui["environment"]["DEFAULT_MODELS"] == "codex-terra"
     assert webui["environment"]["ENABLE_OLLAMA_API"] == "false"
     assert webui["environment"]["ENABLE_SIGNUP"] == "false"
     assert webui["environment"]["ENABLE_RESPONSES_API_STATEFUL"] == "true"
@@ -75,6 +77,28 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
     assert compose["volumes"]["open-webui-data"]["name"] == (
         "${OPEN_WEBUI_DATA_VOLUME:-open-webui-data}"
     )
+
+
+def test_gateway_publishes_the_selectable_codex_model_catalog() -> None:
+    config = yaml.safe_load((ROOT / "config" / "litellm.yaml").read_text())
+    models = config["model_list"]
+
+    assert [entry["model_name"] for entry in models] == [
+        "codex-sol",
+        "codex-terra",
+        "codex-luna",
+    ]
+    assert {
+        entry["model_name"]: entry["litellm_params"]["model"] for entry in models
+    } == {
+        "codex-sol": "openai/gpt-5.6-sol",
+        "codex-terra": "openai/gpt-5.6-terra",
+        "codex-luna": "openai/gpt-5.6-luna",
+    }
+    for entry in models:
+        params = entry["litellm_params"]
+        assert params["api_base"] == "os.environ/CODEX_ADAPTER_BASE_URL"
+        assert params["api_key"] == "os.environ/CODEX_ADAPTER_API_KEY"
 
 
 def test_runtime_images_copy_only_their_required_components() -> None:

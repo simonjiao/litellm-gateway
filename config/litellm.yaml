@@ -1,7 +1,19 @@
 model_list:
-  - model_name: codex-app-server
+  - model_name: codex-sol
     litellm_params:
-      model: openai/codex-app-server
+      model: openai/gpt-5.6-sol
+      api_base: os.environ/CODEX_ADAPTER_BASE_URL
+      api_key: os.environ/CODEX_ADAPTER_API_KEY
+      timeout: 3600
+  - model_name: codex-terra
+    litellm_params:
+      model: openai/gpt-5.6-terra
+      api_base: os.environ/CODEX_ADAPTER_BASE_URL
+      api_key: os.environ/CODEX_ADAPTER_API_KEY
+      timeout: 3600
+  - model_name: codex-luna
+    litellm_params:
+      model: openai/gpt-5.6-luna
       api_base: os.environ/CODEX_ADAPTER_BASE_URL
       api_key: os.environ/CODEX_ADAPTER_API_KEY
       timeout: 3600

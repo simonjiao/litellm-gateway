@@ -56,7 +56,7 @@ async def test_stream_disconnect_only_unsubscribes_execution_continues() -> None
 
     async with app.router.lifespan_context(app):
         stream = await app.state.service.create_streaming(
-            CreateResponseRequest(model="codex-app-server", input="say hello", stream=True)
+            CreateResponseRequest(model="gpt-5.6-terra", input="say hello", stream=True)
         )
         created = await anext(stream)
         response_id = created["response"]["id"]
@@ -82,11 +82,11 @@ async def test_previous_response_reuses_agent_session_sandbox() -> None:
 
     async with app.router.lifespan_context(app):
         first = await app.state.service.create_non_streaming(
-            CreateResponseRequest(model="codex-app-server", input="first")
+            CreateResponseRequest(model="gpt-5.6-sol", input="first")
         )
         second = await app.state.service.create_non_streaming(
             CreateResponseRequest(
-                model="codex-app-server",
+                model="gpt-5.6-luna",
                 input="second",
                 previous_response_id=first["id"],
             )
@@ -100,11 +100,15 @@ async def test_previous_response_reuses_agent_session_sandbox() -> None:
         assert first_record.sandbox_id in sandbox.renewed
 
         thread_calls = [
-            params
+            (method, params)
             for _, method, params in sandbox.rpc_calls
             if method.startswith("thread/")
         ]
-        assert all("sandbox" not in params for params in thread_calls)
+        assert [(method, params["model"]) for method, params in thread_calls] == [
+            ("thread/start", "gpt-5.6-sol"),
+            ("thread/fork", "gpt-5.6-luna"),
+        ]
+        assert all("sandbox" not in params for _, params in thread_calls)
         turn_calls = [params for _, method, params in sandbox.rpc_calls if method == "turn/start"]
         assert all(params["approvalPolicy"] == "never" for params in turn_calls)
         assert all(
@@ -123,7 +127,7 @@ async def test_cancel_interrupts_turn_without_destroying_reusable_sandbox() -> N
     async with app.router.lifespan_context(app):
         stream = await app.state.service.create_streaming(
             CreateResponseRequest(
-                model="codex-app-server",
+                model="gpt-5.6-terra",
                 input="wait until cancelled",
                 stream=True,
             )
@@ -149,7 +153,7 @@ async def test_adapter_reconnects_worker_events_without_public_stream_replay() -
 
     async with app.router.lifespan_context(app):
         response = await app.state.service.create_non_streaming(
-            CreateResponseRequest(model="codex-app-server", input="say hello")
+            CreateResponseRequest(model="gpt-5.6-terra", input="say hello")
         )
         assert response["status"] == "completed"
         assert response["output"][0]["content"][0]["text"] == "hello world"
