@@ -14,7 +14,7 @@ Responses 协议与 Sandbox Worker 接口之间的转换；Sandbox Manager 是�
 Browser
   │
   ▼
-Open WebUI / 同源 BFF
+Open WebUI / 同源 BFF（Backend for Frontend）
   ├── Responses HTTP/SSE → LiteLLM Gateway → Responses Adapter ── RPC/SSE ─→ Worker (runsc)
   │                                                  │                         ├── /workspace volume
   │                                                  │ control                 ├── policy egress → Internet
@@ -100,6 +100,16 @@ Adapter 将解析后的 Codex 模型传给 Agent Runtime；对外 Response 保�
 对象存储无需由浏览器或 Sandbox 直接访问，可以只提供内网 HTTP；生产环境仍应在反向代理、
 服务网格或对象存储端启用 TLS。其他系统可使用自己的 bucket/prefix 和凭证接入同一对象存储，
 但不能复用 Open WebUI 的业务授权。
+
+## 对话与 Workspace 绑定
+
+Open WebUI/BFF 在受保护的映射表中维护 `chat_id → workspace_id`。对话首次执行 Agent 时创建
+随机、可恢复的 Workspace；后续 Sandbox 复用或恢复它。没有已认证对话上下文的请求使用实例级
+临时 Workspace。共享对话的访问跟随 Open WebUI ACL，克隆或分叉的对话默认创建新 Workspace。
+
+浏览器不能指定或修改 `workspace_id`。BFF 根据对话 ACL 取得映射并签发短期操作授权；Manager
+只处理不透明 `workspace_id`，不保存用户或对话 ACL。删除对话时解除映射，停止活动租约，并按
+保留策略延迟清理本地卷和远端 revision。
 
 ## 权限模型
 

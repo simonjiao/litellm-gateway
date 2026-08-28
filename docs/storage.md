@@ -17,6 +17,26 @@ Open WebUI 配置 S3 只改变其文件对象后端，不会把笔记或对话�
 浏览器或 Sandbox 直接访问；它可以仅在内网提供服务。其他系统可用独立 bucket/prefix 和凭证
 复用该对象存储，但各自维护业务 ACL。
 
+Open WebUI 文件对象与 Workspace restic 仓库使用不同的 bucket/prefix 和服务凭证；restic
+repository password 作为第三个独立 Secret 保存。rclone 配置只用于部署检查，不作为运行凭证。
+Open WebUI 独占 Files 凭证；Manager 的专用 Workspace 父凭证只用于调用 RustFS STS。
+每个 Workspace 使用独立 restic repository prefix，一次性任务只收到该 prefix 的临时会话
+凭证，不共享跨 Workspace 去重。
+
+## 对话绑定
+
+同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces` 映射表。记录只保存
+`chat_id`、不透明 `workspace_id`、策略和时间戳；访问权每次从 Open WebUI 对话 ACL 重新判断。
+
+- 对话首次执行 Agent 时，BFF 经 Adapter 请求 Manager 创建可恢复 Workspace，再保存映射；
+- 后续请求取得同一 `workspace_id` 并注入短期签名授权，Adapter 转交给 Manager；
+- 无已认证对话上下文时不创建映射，Manager 使用实例级临时 Workspace；
+- 克隆或分叉对话默认创建新的空 Workspace，不继承原 Workspace；
+- 删除对话时解除映射并请求停止活动租约，Workspace 按保留策略延迟删除。
+
+BFF 以 Open WebUI v0.11.1 派生镜像中的薄路由实现，直接复用其用户认证、Chats、Files 和
+Storage，不部署独立公共服务，也不复制 Open WebUI 的文件元数据或 ACL。
+
 ## 用户上传与下载
 
 ```text
@@ -56,6 +76,8 @@ restic 负责文件扫描、增量分块和去重，系统不维护额外的变�
 恢复时，`workspace-restore-*` 把选定 revision 写入新的空卷并校验，成功后才启动 Worker。
 checkpoint 失败或结果不明时保留 dirty 本地卷，绝不删除唯一副本。快照仅包含 `/workspace`，
 不包含进程、内存、临时运行状态或 Secret。
+对话解除引用后，Manager 先标记延迟删除；宽限期到期且无活动租约或操作时，再删除该
+Workspace 的本地卷、repository prefix 和控制记录。
 
 存储实现复用 Open WebUI Files、兼容 S3 的私有对象存储和 restic。checkout/publish 使用受限
 HTTP 客户端和一次性任务，不设置常驻传输服务，也不构建通用文件 API。

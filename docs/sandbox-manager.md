@@ -19,12 +19,24 @@ Manager 是可信执行控制面，负责把“运行哪个 Sandbox、挂载哪�
 一个可恢复 Workspace 同时最多有一个可写 Worker。Manager 使用 Workspace 锁和本地代次阻止
 旧 Worker 或重复任务继续写入。
 
+## 控制接口
+
+| 接口组 | 语义 |
+|---|---|
+| Workspace | 创建、查询、checkpoint、restore 和解除引用；用户触发的请求要求 BFF 授权 |
+| Sandbox | 创建、查询、续租和销毁；创建时挂载一个可恢复 Workspace 或新建临时 Workspace |
+| 文件操作 | checkout 和 publish；返回可查询的 `operation_id`，不承载文件内容 |
+| 操作查询 | 返回状态和结果；相同幂等键复用已有操作 |
+
+浏览器不直接调用这些接口。Open WebUI/BFF 完成业务授权后调用 Adapter，Adapter 只转交签名
+授权和控制请求；Manager 独立验证授权。
+
 ## Sandbox 生命周期
 
 Manager 提供创建、查询、续租和销毁能力：
 
-1. 校验调用方和请求；若给出 `workspace_id` 则验证并挂载，未给出则创建实例级临时 Workspace；
-   生成不可预测的 `sandbox_id` 与独立连接凭证。
+1. 校验调用方和请求；若给出有效的 Workspace 授权则验证并挂载，未给出则创建实例级临时
+   Workspace；生成不可预测的 `sandbox_id` 与独立连接凭证。
 2. 创建指定资源限制、`runsc` runtime、网络域、Secret 和 Workspace 挂载的 Worker。
 3. 健康检查成功后向 Adapter 返回 Worker 地址、凭证和租约期限；不转发后续 Agent 流量。
 4. 续租时同时验证 Sandbox 状态和最大执行期限；过期、取消或异常时回收 Worker。
@@ -58,9 +70,23 @@ REMOTE_ONLY / DETACHED_CLEAN
   新 Worker 挂载，失败则删除未完成卷并保留原 head。
 - `cleanup`：仅当没有 Worker、租约或进行中操作，最新本地代次已经 commit，且超过保留期时，
   才删除本地卷并进入 `REMOTE_ONLY`。
+- `retire`：Workspace 解除所有对话引用后记录 `delete_after`；宽限期内仍可恢复，到期且
+  无活动资源后，由一次性任务删除该 repository prefix，再清理本地卷和控制记录。
 
 checkpoint 失败或结果不确定时，Workspace 返回 `DETACHED_DIRTY` 并保留本地唯一副本等待重试。
 Manager 不保存进程、内存、临时运行状态和 Secret，只保存 `/workspace`。
+
+## 持久化实现
+
+Manager 采用单实例部署，使用标准库 SQLite、WAL 模式和独立持久卷，不增加 ORM 或外部数据库
+服务。数据库保存 `workspaces`、`revisions`、`sandboxes`、`operations` 和 `consumed_nonces`；
+文件内容与 Open WebUI 的 `chat_id → workspace_id` 映射不进入 Manager 数据库。
+
+状态转换、head revision 更新、Workspace 单写者锁和 nonce 消费必须在事务中完成。Manager
+启动时以数据库记录和受管 Docker 标签进行双向对账：保留未确认已备份的卷，回收无有效记录的
+Worker 和一次性任务，并恢复可安全重试的操作。
+自动 detach、checkpoint、cleanup 和 retire 是 Manager 状态机的内部维护操作，不依赖
+在线用户令牌。
 
 ## 受控文件操作
 
@@ -77,6 +103,14 @@ issuer + audience + operation + sandbox_id + workspace_id
 
 Manager 校验签名、有效期、单次 nonce、Sandbox/Workspace 归属和当前租约，并持久记录消费结果。
 因此猜到或篡改 `file_id` 不能扩大访问范围；Adapter 也不能只凭 `file_id` 请求文件。
+
+授权使用独立密钥的 HMAC-SHA256 紧凑令牌；Adapter 只能转交令牌，不持有签名密钥。Manager 在
+创建操作时原子消费 nonce，并为一次性任务生成仅限该 `operation_id` 的短期传输凭证。
+
+checkout/publish 任务使用 BFF 验证的单次 Files 传输令牌。checkpoint/restore 任务使用
+Manager 通过 RustFS STS 签发的临时 S3 会话凭证；会话策略同时限制当前 Workspace
+repository prefix、必需动作和任务时间。父凭证只注入 Manager，不注入一次性任务或
+Worker；不使用 RustFS root 凭证。
 
 ### checkout：文件进入 Workspace
 
@@ -100,7 +134,7 @@ Manager 校验签名、有效期、单次 nonce、Sandbox/Workspace 归属和当
 
 一次性任务使用普通 `runc`，按操作命名，只获得一个 Workspace 挂载和一个受限网络目的地。
 对象存储或 Open WebUI 的长期凭证，以及 Docker/Manager 凭证，均不得注入任务，更不得注入
-Worker。
+Worker。临时凭证仅在任务存活期内可用，任务终止后不持久化。
 
 Manager 为每次操作持久化 `pending/running/succeeded/failed`、幂等键、输入绑定和结果。启动后
 对账任务与记录：确定成功的操作复用结果，确定失败的安全重试，结果不明的操作先校验目标状态，

@@ -51,6 +51,11 @@ publish 不属于 Responses 字段映射：Open WebUI/BFF 完成业务 ACL 后�
 Manager 执行。Worker 只看到 Workspace 路径，`file_id` 本身不构成授权。上传、下载与发布流程
 见 [文件与 Workspace 存储](storage.md)。
 
+同源 BFF 在 Responses `metadata.agent_workspace_grant` 中注入短期签名授权。Adapter 在建立
+`ResponseRecord` 前移除该保留字段，只把它转交 Manager，不在响应、日志或事件中返回。没有该
+字段的新 Sandbox 使用临时 Workspace；签名无效、过期或绑定不匹配时在创建 Sandbox 前拒绝。
+`previous_response_id` 必须继续绑定原 Workspace，不能通过新授权切换。
+
 ## 请求映射
 
 | Responses 字段 | app-server | 处理 |
@@ -60,7 +65,7 @@ Manager 执行。Worker 只看到 Workspace 路径，`file_id` 本身不构成�
 | input_image URL | `UserInput.Image` | 透传 URL 与 detail |
 | function_call_output | `UserInput.Text` | 带 call ID 的文本输入，不实现函数工具循环 |
 | `instructions` | `developerInstructions` | thread start/fork |
-| `metadata` | ResponseRecord | 仅保存在 Adapter |
+| `metadata` | ResponseRecord | 保存公开字段；移除并消费 `agent_workspace_grant` |
 | `reasoning.effort/summary` | turn start | 透传 |
 | `service_tier` | Thread/Turn `serviceTier` | 透传 |
 | `previous_response_id` | `thread/fork` | 使用前一 Thread/Turn 与同一 Agent Session |

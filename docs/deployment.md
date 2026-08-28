@@ -22,7 +22,7 @@
 | Open WebUI / 同源 BFF | `runc` | control、storage | 文件 ACL 与操作授权 |
 | LiteLLM Gateway | `runc` | control | 无 |
 | Responses Adapter | `runc` | control、agent-rpc | 无 |
-| Sandbox Manager | `runc` | control | 受管 Worker、Workspace 卷和一次性任务权限 |
+| Sandbox Manager | `runc` | control | 单实例；SQLite 状态卷；受管 Worker、Workspace 卷和一次性任务权限 |
 | Sandbox Worker | `runsc` | agent-rpc、agent-egress | 独立工作区与 Runtime Secret |
 | 受控一次性任务 | `runc` | storage | 单 Workspace 挂载与单次操作授权 |
 | agent-dns | `runc` | agent-egress | 无 |
@@ -82,12 +82,17 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
 
 ## 权限与 Secret
 
-- Manager 只获得管理受管 Worker、Workspace 卷和一次性任务所需的运行平台权限，不持有文件
-  数据面或业务 ACL 权限。
+- Manager 只获得管理受管 Worker、Workspace 卷和一次性任务所需的运行平台权限；不持有
+  Open WebUI Files 或业务 ACL 权限。
 - Adapter 不持有运行平台控制凭证。
 - Worker 不持有 Adapter、Manager、Open WebUI、对象存储或运行平台凭证。
 - 一次性任务只挂载一个 Workspace，并只持有当前操作的短期、最小权限凭证。
 - Gateway、Manager、Adapter 和 Worker 使用不同的部署凭证。
+- BFF 与 Manager 共享独立的操作签名 Secret；Adapter 只能转交签名令牌。
+- Open WebUI Files 与 Workspace restic 仓库使用不同的 S3 凭证；restic repository password
+  使用独立 Secret。
+- Manager 的 RustFS 父凭证仅限 Workspace repository 范围，用 STS 为单次任务签发
+  15–60 分钟的 prefix/action 限定会话；任务不持有父凭证。
 - Agent Runtime 认证与配置以只读 Secret 注入 Worker；Workspace 与 Runtime 状态目录分离。
 - 底层平台接口权限过大时，Manager 应运行在专用节点或等价隔离域。
 
@@ -121,23 +126,53 @@ MCP App 交互续租；终态 Response 不保持无限租约。Sandbox 过期后
 
 环境映射只说明满足接口要求的方式，不改变上面的权限和网络不变量。
 
+租约与最长执行时间、单 Workspace 容量与文件数、并发操作数、checkpoint 超时、
+本地卷保留期、远端 revision 保留期和对话删除宽限期均为部署参数，不写死在业务
+逻辑中。超限操作在创建任务前拒绝。
+
+## 实现方案与规模
+
+Open WebUI 使用以 v0.11.1 为基线的派生镜像，只增加同源 BFF 路由和最小消息附件集成，并直接
+复用上游认证、Chats、Files 与 Storage。Manager 使用标准库 SQLite WAL；checkout/publish
+使用同一个轻量一次性任务镜像，checkpoint/restore 直接调用镜像内的 restic。宿主机不安装
+restic，RustFS STS 负责临时 S3 凭证，也不增加常驻传输服务。现有
+`DockerSandboxBackend` 保留为运行平台实现，扩展卷、标签和一次性任务管理。
+
+以下为本次需新增或重写的手写逻辑估算，不含现有未改代码、Open WebUI 上游代码、
+restic、生成文件和依赖锁文件：
+
+| 分类 | 实现内容 | 生产代码 | 测试代码 |
+|---|---|---:|---:|
+| Open WebUI/BFF | 对话映射、ACL、签名授权、受控 Files 传输和消息附件 | 350–550 行 | 250–400 行 |
+| Adapter | 内部 Workspace 授权转交、敏感 metadata 剥离和操作调用 | 100–180 行 | 100–160 行 |
+| Manager 状态与接口 | SQLite schema/repository、模型、事务、nonce、STS 和控制接口 | 350–550 行 | 300–450 行 |
+| Manager Docker 控制 | 卷与 Sandbox 解耦、单写者、对账、reaper 和一次性任务编排 | 500–750 行 | 450–650 行 |
+| 一次性任务 | 安全 checkout/publish 客户端、restic 调用和结果清单 | 200–350 行 | 150–250 行 |
+| 部署与验收 | 镜像、Compose、Secret、storage 网络、脚本和 smoke | 150–250 行 | 150–250 行 |
+| 合计 | — | 1,650–2,630 行 | 1,400–2,160 行 |
+
+总实现规模预计为 3,050–4,790 行，其中约一半用于隔离、失败恢复和验收。实施顺序固定为：
+Manager 持久状态与 Workspace 卷、checkpoint/restore、Open WebUI/BFF 与 Adapter 绑定、
+checkout/publish、端到端部署验收。
+
 ## Docker 参考部署
 
 仓库中的 `compose.yaml` 将 Open WebUI、Gateway、Adapter 和 Sandbox Manager 作为独立
-`runc` 服务部署；Gateway、Adapter 和 Manager 分别构建独立镜像，Open WebUI 使用固定版本的
-上游镜像。公共 Compose 配置只复用运行时加固项。Sandbox Worker 使用第四个本项目镜像。
+`runc` 服务部署；Open WebUI 从固定上游基线构建派生镜像，Gateway、Adapter、Manager、
+Sandbox Worker 和一次性任务分别使用独立镜像。公共 Compose 配置只复用运行时加固项。
 Manager 通过 Docker socket 创建 `runsc` Worker；Compose 通过
 `SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
 准备三个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
 
-默认镜像为 `agent-gateway:0.3.0`、`agent-adapter:0.3.0`、
-`agent-sandbox-manager:0.3.0` 和 `codex-sandbox-worker:0.3.0`；分别通过
-`AGENT_GATEWAY_IMAGE`、`AGENT_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE` 和
-`SANDBOX_IMAGE` 覆盖。
+默认镜像为 `agent-open-webui:0.3.0`、`agent-gateway:0.3.0`、`agent-adapter:0.3.0`、
+`agent-sandbox-manager:0.3.0`、`codex-sandbox-worker:0.3.0` 和一次性任务镜像
+`agent-storage-ops:0.3.0`；分别通过 `OPEN_WEBUI_IMAGE`、`AGENT_GATEWAY_IMAGE`、
+`AGENT_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE`、`SANDBOX_IMAGE` 和
+`AGENT_STORAGE_OPS_IMAGE` 覆盖。
 
-Open WebUI 默认为 `ghcr.io/open-webui/open-webui:v0.11.1`，通过 `OPEN_WEBUI_IMAGE` 覆盖；
-默认发布到宿主端口 `3000`，数据保存在命名卷 `open-webui-data`。它将
+`agent-open-webui` 以 `ghcr.io/open-webui/open-webui:v0.11.1` 为固定基线。Open WebUI 默认发布到
+宿主端口 `3000`，数据保存在命名卷 `open-webui-data`。它将
 `http://gateway:4000/v1` 配置为 Responses 连接，不设置连接级 `model_ids`，因此模型选择器
 直接使用 Gateway 发布的目录。`config/litellm.yaml` 中的参考目录为：
 
@@ -179,9 +214,9 @@ Open WebUI 消息渲染，并由同源 BFF 代理 Adapter 的 `/v1/mcp-apps/*` �
 
 Open WebUI、Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或宿主重启、
 Adapter/DNS/代理/内部服务变化后，必须再次执行 `run-stack.sh`；脚本重建 Manager 和
-Adapter、清理现有 Worker 及其 Workspace 卷、原子恢复策略，失败时保持 Open WebUI、Gateway
-和 Adapter 停止。因此部署操作会结束活动 Sandbox、删除实例级临时 Workspace，并清除 Adapter
-的单进程内存状态。
+Adapter、清理现有 Worker 及实例级临时 Workspace、原子恢复策略，失败时保持 Open WebUI、
+Gateway 和 Adapter 停止。部署操作会结束活动 Sandbox，但必须保留 Manager 状态卷和可恢复
+Workspace，并由 Manager 重启后对账。
 
 ## 验收
 
