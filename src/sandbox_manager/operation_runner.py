@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import suppress
-from typing import Any
+from typing import Any, Literal
 
 from .settings import ManagerSettings
 from .state import WorkspaceRecord
@@ -37,7 +37,7 @@ class DockerOperationRunner:
             await self._sts.aclose()
 
     async def checkpoint(self, operation_id: str, workspace: WorkspaceRecord) -> dict[str, Any]:
-        environment, password_mount = await self._repository_access(workspace, writable=True)
+        environment, password_mount = await self._repository_access(workspace, mode="write")
         return await self._run(
             operation_id,
             "workspace-checkpoint",
@@ -55,16 +55,42 @@ class DockerOperationRunner:
         workspace: WorkspaceRecord,
         revision_id: str,
     ) -> dict[str, Any]:
-        environment, password_mount = await self._repository_access(workspace, writable=False)
+        environment, password_mount = await self._repository_access(workspace, mode="read")
         return await self._run(
             operation_id,
             "workspace-restore",
             workspace,
             ["restore", "--revision", revision_id],
-            mount_path="/restore/workspace",
+            mount_path="/restore",
             mount_mode="rw",
             environment=environment,
             extra_volumes=password_mount,
+        )
+
+    async def retire(self, operation_id: str, workspace: WorkspaceRecord) -> dict[str, Any]:
+        environment, _ = await self._repository_access(workspace, mode="delete")
+        for name in ("RESTIC_REPOSITORY", "RESTIC_PASSWORD_FILE", "RESTIC_CACHE_DIR"):
+            environment.pop(name, None)
+        settings = self._settings
+        assert settings.object_store_endpoint is not None
+        assert settings.workspace_bucket is not None
+        prefix = f"{settings.workspace_prefix.strip('/')}/{workspace.id}"
+        return await self._run(
+            operation_id,
+            "workspace-retire",
+            workspace,
+            [
+                "retire",
+                "--endpoint",
+                settings.object_store_endpoint,
+                "--bucket",
+                settings.workspace_bucket,
+                "--prefix",
+                prefix,
+            ],
+            mount_path=None,
+            mount_mode="ro",
+            environment=environment,
         )
 
     async def checkout(
@@ -130,7 +156,10 @@ class DockerOperationRunner:
         )
 
     async def _repository_access(
-        self, workspace: WorkspaceRecord, *, writable: bool
+        self,
+        workspace: WorkspaceRecord,
+        *,
+        mode: Literal["read", "write", "delete"],
     ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
         settings = self._settings
         assert settings.object_store_endpoint is not None
@@ -143,7 +172,7 @@ class DockerOperationRunner:
             credentials = await self._sts.assume_role(
                 duration_seconds=settings.sts_duration_seconds,
                 policy=workspace_session_policy(
-                    settings.workspace_bucket, prefix, writable=writable
+                    settings.workspace_bucket, prefix, mode=mode
                 ),
             )
             access_key = credentials.access_key
@@ -182,15 +211,14 @@ class DockerOperationRunner:
         workspace: WorkspaceRecord,
         command: list[str],
         *,
-        mount_path: str,
+        mount_path: str | None,
         mount_mode: str,
         environment: dict[str, str] | None = None,
         extra_volumes: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        volumes = {
-            workspace.volume_name: {"bind": mount_path, "mode": mount_mode},
-            **(extra_volumes or {}),
-        }
+        volumes = dict(extra_volumes or {})
+        if mount_path is not None:
+            volumes[workspace.volume_name] = {"bind": mount_path, "mode": mount_mode}
         short_id = operation_id.removeprefix("operation_")[:24]
         spec: dict[str, Any] = {
             "name": f"{role}-{short_id}",

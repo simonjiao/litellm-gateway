@@ -22,10 +22,12 @@ WORKDIR /opt/storage-ops
 COPY src/storage_ops ./src/storage_ops
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install "httpx>=0.28,<1.0" \
+    PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install --timeout 120 --retries 5 \
+      "boto3>=1.42,<2.0" \
+      "httpx>=0.28,<1.0" \
     && groupadd --gid 10001 storage-ops \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin storage-ops \
-    && mkdir -p /workspace /restore/workspace \
+    && mkdir -p /workspace /restore \
     && chown -R 10001:10001 /opt/storage-ops /home/storage-ops /workspace /restore
 
 USER 10001:10001

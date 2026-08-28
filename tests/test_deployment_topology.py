@@ -127,7 +127,7 @@ def test_runtime_images_copy_only_their_required_components() -> None:
 
     assert "COPY src" not in gateway
     assert "COPY src/codex_responses_adapter" in adapter
-    assert "COPY src/sandbox_manager ./src/sandbox_manager" in manager
+    assert "src/sandbox_manager ./src/sandbox_manager" in manager
     assert "COPY src/sandbox_worker ./src/sandbox_worker" in worker
     assert "COPY src/storage_ops ./src/storage_ops" in storage_ops
     assert "FROM ghcr.io/open-webui/open-webui:v0.11.1" in webui

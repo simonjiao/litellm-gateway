@@ -38,7 +38,7 @@ async def test_rustfs_sts_request_is_sigv4_signed_and_policy_scoped() -> None:
         client=http,
     )
     policy = workspace_session_policy(
-        "agent-workspaces", "repositories/workspace_test", writable=True
+        "agent-workspaces", "repositories/workspace_test", mode="write"
     )
     credentials = await client.assume_role(
         duration_seconds=900,
@@ -60,8 +60,16 @@ async def test_rustfs_sts_request_is_sigv4_signed_and_policy_scoped() -> None:
 
 def test_restore_policy_cannot_write_objects() -> None:
     policy = workspace_session_policy(
-        "agent-workspaces", "repositories/workspace_test", writable=False
+        "agent-workspaces", "repositories/workspace_test", mode="read"
     )
 
     object_statement = policy["Statement"][1]
     assert object_statement["Action"] == ["s3:GetObject"]
+
+
+def test_workspace_delete_policy_cannot_read_or_write_objects() -> None:
+    policy = workspace_session_policy(
+        "agent-workspaces", "repositories/workspace_test", mode="delete"
+    )
+
+    assert policy["Statement"][1]["Action"] == ["s3:DeleteObject"]

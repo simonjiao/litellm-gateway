@@ -1061,6 +1061,11 @@ class DockerSandboxBackend:
                         self._checkpoint_workspace(workspace.id),
                         name=f"checkpoint-{workspace.id}",
                     )
+                for workspace in self._state.retire_candidates(now):
+                    self._schedule_operation(
+                        self._retire_workspace(workspace.id),
+                        name=f"retire-{workspace.id}",
+                    )
                 cutoff = now - self._settings.workspace_local_retention_seconds
                 for workspace in self._state.cleanup_candidates(cutoff):
                     try:
@@ -1069,6 +1074,57 @@ class DockerSandboxBackend:
                         logger.exception(
                             "Failed to clean local volume for Workspace %s", workspace.id
                         )
+
+    async def _retire_workspace(self, workspace_id: str) -> None:
+        if self._operation_runner is None:
+            return
+        lock = self._workspace_locks.setdefault(workspace_id, asyncio.Lock())
+        async with lock:
+            try:
+                workspace = self._state.get_workspace(workspace_id)
+            except StateNotFoundError:
+                return
+            now = int(time.time())
+            if (
+                workspace.delete_after is None
+                or workspace.delete_after > now
+                or workspace.active_sandbox_id is not None
+                or workspace.status not in {"detached_clean", "remote_only", "deleting"}
+            ):
+                return
+            operation, _ = self._state.create_operation(
+                f"operation_{uuid.uuid4().hex}",
+                operation="retire",
+                workspace_id=workspace.id,
+                sandbox_id=None,
+                idempotency_key=f"retire:{workspace.id}",
+                input_data={},
+            )
+            try:
+                if workspace.status != "deleting":
+                    workspace = self._state.transition_workspace(
+                        workspace.id,
+                        expected={"detached_clean", "remote_only"},
+                        status="deleting",
+                    )
+                self._state.update_operation(operation.id, status="running")
+                result = (
+                    await self._operation_runner.retire(operation.id, workspace)
+                    if workspace.head_revision is not None
+                    else {"objects_deleted": 0}
+                )
+                self._state.update_operation(operation.id, status="succeeded", result=result)
+                await self._remove_volume_checked(workspace.volume_name)
+                self._state.delete_workspace(workspace.id)
+                logger.info("Retired Workspace %s", workspace.id)
+            except Exception as exc:
+                with suppress(StateNotFoundError):
+                    self._state.update_operation(
+                        operation.id,
+                        status="failed",
+                        error=_operation_error(exc),
+                    )
+                logger.exception("Failed to retire Workspace %s", workspace.id)
 
     async def _cleanup_local_workspace(self, workspace_id: str) -> None:
         lock = self._workspace_locks.setdefault(workspace_id, asyncio.Lock())

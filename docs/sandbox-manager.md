@@ -14,7 +14,7 @@ Manager 是可信执行控制面，负责把“运行哪个 Sandbox、挂载哪�
 | `sandbox_id` | 一次可销毁的计算实例 |
 | `workspace_id` | 独立于计算实例的 Workspace 身份，可配置为临时或可恢复 |
 | `revision_id` | 已提交到远端仓库的不可变 Workspace 快照 |
-| `operation_id` | checkout、publish、checkpoint 或 restore 的幂等操作 |
+| `operation_id` | checkout、publish、checkpoint、restore 或 retire 的幂等操作 |
 
 一个可恢复 Workspace 同时最多有一个可写 Worker。Manager 使用 Workspace 锁和本地代次阻止
 旧 Worker 或重复任务继续写入。
@@ -132,7 +132,7 @@ Worker；不使用 RustFS root 凭证。
 
 ## 操作执行与恢复
 
-一次性任务使用普通 `runc`，按操作命名，只获得一个 Workspace 挂载和一个受限网络目的地。
+一次性任务使用普通 `runc`，按操作命名，最多获得一个 Workspace 挂载和一个受限网络目的地。
 对象存储或 Open WebUI 的长期凭证，以及 Docker/Manager 凭证，均不得注入任务，更不得注入
 Worker。临时凭证仅在任务存活期内可用，任务终止后不持久化。
 

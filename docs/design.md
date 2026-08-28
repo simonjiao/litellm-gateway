@@ -40,7 +40,7 @@ Open WebUI / 同源 BFF（Backend for Frontend）
 | Adapter | Responses 请求与事件映射、Worker RPC/SSE；调用 Manager 并转交 BFF 文件操作授权 |
 | Sandbox Manager | Sandbox 生命周期、Workspace 生命周期、受控文件操作编排和操作状态恢复 |
 | Sandbox Worker | 托管 Agent Runtime，只访问挂载给自己的 Workspace 和获准网络接口 |
-| 一次性任务 | 在最小挂载和短期凭证下执行 checkout、publish、checkpoint 或 restore |
+| 一次性任务 | 在最小挂载和短期凭证下执行 checkout、publish、checkpoint、restore 或 retire |
 | Open WebUI Files | 管理上传文件与已发布生成物，提供稳定 `file_id` 和授权下载入口 |
 | 对象存储 | 保存 Open WebUI 文件对象及 Workspace 快照；不同用途使用独立 bucket/prefix 与凭证 |
 | MCP Gateway | 独立提供和治理 MCP Server、Tool 与 App |
@@ -119,7 +119,7 @@ Open WebUI/BFF 在受保护的映射表中维护 `chat_id → workspace_id`。�
 | Open WebUI / BFF | 校验用户/对话/文件权限；签发短期、单次操作授权 | 控制 Worker 或向 Sandbox 暴露存储凭证 |
 | Adapter | 调用 Manager 控制接口；连接 Worker | 控制底层运行平台或自行授予文件权限 |
 | Sandbox Manager | 管理受管 Worker、Workspace 卷和一次性任务；验证操作授权 | 判断业务 ACL；代理 Agent 或文件数据面 |
-| 一次性任务 | 访问一个 Workspace 和一次操作所需端点 | 访问其他 Workspace、长期凭证或通用运行平台接口 |
+| 一次性任务 | 按需访问一个 Workspace 和一次操作所需端点 | 访问其他 Workspace、长期凭证或通用运行平台接口 |
 | Sandbox Worker | 访问自己的 Workspace、策略代理和明确允许的内部接口 | 访问 Files、对象存储、Adapter、Manager 或运行平台凭证 |
 | egress-proxy | 访问允许的外部目标 | 接受非 Agent 网络来源或转发未授权目标 |
 

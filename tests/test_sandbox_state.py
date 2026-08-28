@@ -141,3 +141,27 @@ def test_checkpoint_commit_atomically_advances_head_and_operation() -> None:
         assert store.cleanup_candidates(40) == [workspace]
     finally:
         store.close()
+
+
+def test_retire_candidates_require_expired_grace_and_no_active_operation() -> None:
+    store = _store()
+    try:
+        workspace = store.create_workspace(
+            "workspace_retire", kind="recoverable", volume_name="agent-workspace-retire", now=10
+        )
+        store.schedule_workspace_delete(workspace.id, 100, now=20)
+        assert store.retire_candidates(99) == []
+        assert [item.id for item in store.retire_candidates(100)] == [workspace.id]
+
+        store.create_operation(
+            "operation_retire",
+            operation="retire",
+            workspace_id=workspace.id,
+            sandbox_id=None,
+            idempotency_key=f"retire:{workspace.id}",
+            input_data={},
+            now=30,
+        )
+        assert store.retire_candidates(100) == []
+    finally:
+        store.close()

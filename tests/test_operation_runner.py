@@ -166,3 +166,80 @@ async def test_checkpoint_task_can_use_explicit_static_business_credentials(
     assert environment["AWS_SECRET_ACCESS_KEY"] == "business-secret"
     assert "AWS_SESSION_TOKEN" not in environment
     assert environment["RESTIC_REPOSITORY"].endswith("/agent-data/workspaces/workspace_static_test")
+
+
+@pytest.mark.asyncio
+async def test_restore_mounts_workspace_volume_at_restic_target(tmp_path: Path) -> None:
+    password_file = tmp_path / "restic-password"
+    password_file.write_text("repository-password")
+    settings = ManagerSettings(
+        storage_enabled=True,
+        object_store_endpoint="http://rustfs:9000",
+        object_store_credential_mode="static",
+        object_store_parent_access_key="business-access",
+        object_store_parent_secret_key=SecretStr("business-secret"),
+        workspace_bucket="agent-data",
+        restic_password_file=password_file,
+    )
+    docker_client = _OperationDocker()
+    runner = DockerOperationRunner(settings, docker_client)
+    workspace = WorkspaceRecord(
+        id="workspace_restore_test",
+        kind="recoverable",
+        status="restoring",
+        volume_name="agent-workspace-restore",
+        generation=1,
+        head_revision="snapshot-test",
+        active_sandbox_id=None,
+        created_at=10,
+        updated_at=20,
+        delete_after=None,
+    )
+
+    result = await runner.restore("operation_restore", workspace, "snapshot-test")
+    await runner.close()
+
+    assert result["revision_id"] == "snapshot-test"
+    container = docker_client.containers.created[0]
+    assert container.spec["volumes"][workspace.volume_name] == {
+        "bind": "/restore",
+        "mode": "rw",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retire_has_prefix_scoped_credentials_and_no_workspace_mount(tmp_path: Path) -> None:
+    password_file = tmp_path / "restic-password"
+    password_file.write_text("repository-password")
+    settings = ManagerSettings(
+        storage_enabled=True,
+        object_store_endpoint="http://rustfs:9000",
+        object_store_credential_mode="static",
+        object_store_parent_access_key="business-access",
+        object_store_parent_secret_key=SecretStr("business-secret"),
+        workspace_bucket="agent-data",
+        workspace_prefix="workspaces",
+        restic_password_file=password_file,
+    )
+    docker_client = _OperationDocker()
+    runner = DockerOperationRunner(settings, docker_client)
+    workspace = WorkspaceRecord(
+        id="workspace_retire_test",
+        kind="recoverable",
+        status="deleting",
+        volume_name="agent-workspace-retire",
+        generation=1,
+        head_revision="snapshot-test",
+        active_sandbox_id=None,
+        created_at=10,
+        updated_at=20,
+        delete_after=30,
+    )
+
+    await runner.retire("operation_retire", workspace)
+    await runner.close()
+
+    spec = docker_client.containers.created[0].spec
+    assert spec["volumes"] == {}
+    assert spec["command"][-1] == "workspaces/workspace_retire_test"
+    assert "RESTIC_PASSWORD_FILE" not in spec["environment"]

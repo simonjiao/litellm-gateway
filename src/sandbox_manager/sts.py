@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlencode, urlsplit
 from xml.etree import ElementTree
 
@@ -134,11 +134,18 @@ class RustFSSTSClient:
         }
 
 
-def workspace_session_policy(bucket: str, prefix: str, *, writable: bool) -> dict[str, Any]:
+def workspace_session_policy(
+    bucket: str,
+    prefix: str,
+    *,
+    mode: Literal["read", "write", "delete"],
+) -> dict[str, Any]:
     normalized = prefix.strip("/")
-    object_actions = ["s3:GetObject"]
-    if writable:
-        object_actions.extend(["s3:PutObject", "s3:DeleteObject"])
+    object_actions = {
+        "read": ["s3:GetObject"],
+        "write": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        "delete": ["s3:DeleteObject"],
+    }[mode]
     return {
         "Version": "2012-10-17",
         "Statement": [

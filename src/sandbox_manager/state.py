@@ -498,6 +498,29 @@ class StateStore:
             )
         return [_workspace(row) for row in rows]
 
+    def retire_candidates(self, now: int) -> list[WorkspaceRecord]:
+        with self._lock:
+            rows = (
+                self._require_connection()
+                .execute(
+                    """
+                    SELECT w.* FROM workspaces AS w
+                    WHERE w.kind = 'recoverable'
+                      AND w.status IN ('detached_clean', 'remote_only', 'deleting')
+                      AND w.active_sandbox_id IS NULL
+                      AND w.delete_after IS NOT NULL
+                      AND w.delete_after <= ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM operations AS o
+                          WHERE o.workspace_id = w.id AND o.status IN ('pending', 'running')
+                      )
+                    """,
+                    (now,),
+                )
+                .fetchall()
+            )
+        return [_workspace(row) for row in rows]
+
     def workspaces_with_status(self, *statuses: str) -> list[WorkspaceRecord]:
         if not statuses:
             return []

@@ -8,11 +8,9 @@ ENV PYTHONUNBUFFERED=1 \
     HOME=/home/service
 
 WORKDIR /opt/sandbox-manager
-COPY src/sandbox_api ./src/sandbox_api
-COPY src/sandbox_manager ./src/sandbox_manager
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install \
+    PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install --timeout 120 --retries 5 \
       "docker>=7.1,<8.0" \
       "fastapi>=0.115,<1.0" \
       "httpx>=0.28,<1.0" \
@@ -23,6 +21,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin service \
     && mkdir -p /var/lib/sandbox-manager \
     && chown -R 10001:10001 /opt/sandbox-manager /home/service /var/lib/sandbox-manager
+
+COPY --chown=10001:10001 src/sandbox_api ./src/sandbox_api
+COPY --chown=10001:10001 src/sandbox_manager ./src/sandbox_manager
 
 USER 10001:10001
 EXPOSE 8092

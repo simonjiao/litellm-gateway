@@ -1,12 +1,74 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
-from storage_ops.cli import StorageOperationError, checkout, publish
+from storage_ops import cli
+from storage_ops.cli import StorageOperationError, checkout, publish, restore, retire_repository
+
+
+class _S3:
+    def __init__(self) -> None:
+        self.list_calls = 0
+        self.deleted: list[str] = []
+
+    def list_objects_v2(self, **_: Any) -> dict[str, Any]:
+        self.list_calls += 1
+        if self.list_calls == 1:
+            return {"Contents": [{"Key": "workspaces/workspace_test/config"}]}
+        if self.list_calls == 2:
+            return {"Contents": [{"Key": "workspaces/workspace_test/data/one"}]}
+        return {"Contents": []}
+
+    def delete_objects(self, **request: Any) -> dict[str, Any]:
+        self.deleted.extend(item["Key"] for item in request["Delete"]["Objects"])
+        return {}
+
+
+def test_retire_deletes_every_object_under_one_repository_prefix() -> None:
+    s3 = _S3()
+
+    result = retire_repository(
+        "http://rustfs:9000",
+        "agent-data",
+        "workspaces/workspace_test",
+        client=s3,
+    )
+
+    assert result == {"objects_deleted": 2}
+    assert s3.deleted == [
+        "workspaces/workspace_test/config",
+        "workspaces/workspace_test/data/one",
+    ]
+
+
+def test_restore_writes_snapshot_contents_at_volume_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_restic(
+        arguments: list[str], *, cwd: Path, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        assert arguments == ["restore", "snapshot-test", "--target", str(tmp_path)]
+        assert cwd == tmp_path
+        (cwd / "restore-proof.txt").write_text("restored")
+        return subprocess.CompletedProcess(["restic"], 0, "", "")
+
+    monkeypatch.setattr(cli, "_restic", fake_restic)
+
+    assert restore("snapshot-test", tmp_path) == {"revision_id": "snapshot-test"}
+    assert (tmp_path / "restore-proof.txt").read_text() == "restored"
+
+
+def test_restore_rejects_a_nonempty_volume(tmp_path: Path) -> None:
+    (tmp_path / "existing.txt").write_text("data")
+
+    with pytest.raises(StorageOperationError, match="must be empty"):
+        restore("snapshot-test", tmp_path)
 
 
 def test_checkout_streams_and_atomically_installs_file(tmp_path: Path) -> None:

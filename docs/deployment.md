@@ -28,7 +28,7 @@
 | agent-dns | `runc` | agent-egress | 无 |
 | egress-proxy | `runc` | agent-egress、egress-uplink | 无 |
 
-一次性任务按 checkout、publish、checkpoint 或 restore 动态创建，不是常驻传输服务。
+一次性任务按 checkout、publish、checkpoint、restore 或 retire 动态创建，不是常驻传输服务。
 Open WebUI 暴露用户界面，Gateway 暴露 Responses 入口。BFF 可作为 Open WebUI 的同源后端
 扩展，不要求独立公共服务。Adapter、Manager、Worker 和一次性任务不暴露公共端口。
 
@@ -86,7 +86,7 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
   Open WebUI Files 或业务 ACL 权限。
 - Adapter 不持有运行平台控制凭证。
 - Worker 不持有 Adapter、Manager、Open WebUI、对象存储或运行平台凭证。
-- 一次性任务只挂载一个 Workspace，并只持有当前操作的短期、最小权限凭证。
+- 一次性任务最多挂载一个 Workspace，并只持有当前操作的短期、最小权限凭证。
 - Gateway、Manager、Adapter 和 Worker 使用不同的部署凭证。
 - BFF 与 Manager 共享独立的操作签名 Secret；Adapter 只能转交签名令牌。
 - Open WebUI Files 与 Workspace restic 仓库使用不同的 S3 凭证；restic repository password
@@ -238,7 +238,7 @@ Workspace，并由 Manager 重启后对账。
   Sandbox 前被拒绝。
 - 每个公共模型 ID 均路由到对应 Agent Runtime 模型，对外 Response 保持公共 ID。
 - 缺少授权、过期、重放或绑定到其他 Sandbox/Workspace 的文件操作全部 fail closed。
-- Worker 无法访问 Files 或对象存储；一次性任务只能访问一个 Workspace 和当前操作端点。
+- Worker 无法访问 Files 或对象存储；一次性任务最多访问一个 Workspace 和当前操作端点。
 - checkpoint 成功并提交 revision 后才能延迟删除本地卷；失败时保留 dirty 本地卷。
 - restore 在新空卷中完成校验后才启动 Worker，恢复内容与指定 revision 一致。
 - 已发布生成物在 Sandbox/Workspace 清理后仍可经 Open WebUI ACL 链接下载。

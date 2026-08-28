@@ -11,7 +11,9 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
+import boto3  # pyright: ignore[reportMissingTypeStubs]
 import httpx
 
 
@@ -31,6 +33,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = checkpoint(Path(args.workspace), args.workspace_id)
         elif args.operation == "restore":
             result = restore(args.revision, Path(args.target))
+        elif args.operation == "retire":
+            result = retire_repository(args.endpoint, args.bucket, args.prefix)
         elif args.operation == "checkout":
             result = checkout(
                 Path(args.workspace),
@@ -84,13 +88,60 @@ def restore(revision: str, target: Path) -> dict[str, Any]:
     root = target.resolve(strict=True)
     if not root.is_dir():
         raise StorageOperationError("Restore target is not a directory")
-    workspace_target = root / "workspace"
-    if workspace_target.exists() and any(workspace_target.iterdir()):
+    if any(root.iterdir()):
         raise StorageOperationError("Restore target must be empty")
     _restic(["restore", revision, "--target", str(root)], cwd=root)
-    if not workspace_target.is_dir():
-        raise StorageOperationError("restic restore did not produce the Workspace root")
     return {"revision_id": revision}
+
+
+def retire_repository(
+    endpoint: str,
+    bucket: str,
+    prefix: str,
+    *,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    parsed = urlsplit(endpoint.rstrip("/"))
+    normalized = prefix.strip("/")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise StorageOperationError("Object-store endpoint is invalid")
+    if not bucket or not normalized:
+        raise StorageOperationError("Object-store bucket and prefix are required")
+
+    own_client = client is None
+    s3 = client or boto3.client(
+        "s3",
+        endpoint_url=endpoint.rstrip("/"),
+        region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+    )
+    deleted = 0
+    try:
+        while True:
+            listing = s3.list_objects_v2(Bucket=bucket, Prefix=f"{normalized}/")
+            contents = listing.get("Contents") or []
+            objects = [
+                {"Key": item["Key"]}
+                for item in contents
+                if isinstance(item, dict) and isinstance(item.get("Key"), str)
+            ]
+            if objects:
+                response = s3.delete_objects(
+                    Bucket=bucket,
+                    Delete={"Objects": objects, "Quiet": True},
+                )
+                errors = response.get("Errors") or []
+                if errors:
+                    code = errors[0].get("Code") if isinstance(errors[0], dict) else None
+                    raise StorageOperationError(
+                        f"Object-store delete failed: {code or 'unknown error'}"
+                    )
+                deleted += len(objects)
+            if not contents:
+                break
+    finally:
+        if own_client:
+            s3.close()
+    return {"objects_deleted": deleted}
 
 
 def checkout(
@@ -272,6 +323,11 @@ def _parser() -> argparse.ArgumentParser:
     restore_parser = subparsers.add_parser("restore")
     restore_parser.add_argument("--revision", required=True)
     restore_parser.add_argument("--target", default="/restore")
+
+    retire_parser = subparsers.add_parser("retire")
+    retire_parser.add_argument("--endpoint", required=True)
+    retire_parser.add_argument("--bucket", required=True)
+    retire_parser.add_argument("--prefix", required=True)
 
     checkout_parser = subparsers.add_parser("checkout")
     checkout_parser.add_argument("--workspace", default="/workspace")
