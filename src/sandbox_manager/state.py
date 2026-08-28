@@ -59,6 +59,14 @@ class OperationRecord:
     updated_at: int
 
 
+@dataclass(frozen=True, slots=True)
+class RevisionRecord:
+    id: str
+    workspace_id: str
+    snapshot_id: str
+    created_at: int
+
+
 class StateStore:
     """Single-process SQLite state store for Manager control state."""
 
@@ -375,6 +383,144 @@ class StateStore:
             ).fetchone()
             assert row is not None
             return _workspace(row)
+
+    def transition_workspace(
+        self,
+        workspace_id: str,
+        *,
+        expected: set[str],
+        status: str,
+        now: int | None = None,
+    ) -> WorkspaceRecord:
+        timestamp = int(time.time()) if now is None else now
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            if row is None:
+                raise StateNotFoundError(f"Workspace '{workspace_id}' was not found")
+            if str(row["status"]) not in expected:
+                raise StateConflictError(
+                    f"Workspace '{workspace_id}' cannot transition from {row['status']} to {status}"
+                )
+            if row["active_sandbox_id"] is not None and status != "running":
+                raise StateConflictError(f"Workspace '{workspace_id}' still has a writer")
+            connection.execute(
+                "UPDATE workspaces SET status = ?, updated_at = ? WHERE id = ?",
+                (status, timestamp, workspace_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            assert updated is not None
+            return _workspace(updated)
+
+    def commit_revision(
+        self,
+        workspace_id: str,
+        *,
+        operation_id: str,
+        revision_id: str,
+        generation: int,
+        result: dict[str, Any],
+        now: int | None = None,
+    ) -> tuple[WorkspaceRecord, OperationRecord]:
+        timestamp = int(time.time()) if now is None else now
+        with self.transaction() as connection:
+            workspace = connection.execute(
+                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            if workspace is None:
+                raise StateNotFoundError(f"Workspace '{workspace_id}' was not found")
+            if (
+                workspace["status"] != "checkpointing"
+                or workspace["active_sandbox_id"] is not None
+                or int(workspace["generation"]) != generation
+            ):
+                raise StateConflictError(f"Workspace '{workspace_id}' changed during checkpoint")
+            connection.execute(
+                """
+                INSERT INTO revisions (id, workspace_id, snapshot_id, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, snapshot_id) DO NOTHING
+                """,
+                (revision_id, workspace_id, revision_id, timestamp),
+            )
+            connection.execute(
+                """
+                UPDATE workspaces
+                SET head_revision = ?, status = 'detached_clean', updated_at = ?
+                WHERE id = ?
+                """,
+                (revision_id, timestamp, workspace_id),
+            )
+            connection.execute(
+                """
+                UPDATE operations
+                SET status = 'succeeded', result_json = ?, error = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(result, sort_keys=True, separators=(",", ":")),
+                    timestamp,
+                    operation_id,
+                ),
+            )
+            workspace_row = connection.execute(
+                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+            ).fetchone()
+            operation_row = connection.execute(
+                "SELECT * FROM operations WHERE id = ?", (operation_id,)
+            ).fetchone()
+            assert workspace_row is not None and operation_row is not None
+            return _workspace(workspace_row), _operation(operation_row)
+
+    def cleanup_candidates(self, updated_before: int) -> list[WorkspaceRecord]:
+        with self._lock:
+            rows = (
+                self._require_connection()
+                .execute(
+                    """
+                    SELECT w.* FROM workspaces AS w
+                    WHERE w.kind = 'recoverable'
+                      AND w.status = 'detached_clean'
+                      AND w.head_revision IS NOT NULL
+                      AND w.active_sandbox_id IS NULL
+                      AND w.updated_at <= ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM operations AS o
+                          WHERE o.workspace_id = w.id AND o.status IN ('pending', 'running')
+                      )
+                    """,
+                    (updated_before,),
+                )
+                .fetchall()
+            )
+        return [_workspace(row) for row in rows]
+
+    def workspaces_with_status(self, *statuses: str) -> list[WorkspaceRecord]:
+        if not statuses:
+            return []
+        placeholders = ",".join("?" for _ in statuses)
+        with self._lock:
+            rows = (
+                self._require_connection()
+                .execute(
+                    f"SELECT * FROM workspaces WHERE status IN ({placeholders})",
+                    statuses,
+                )
+                .fetchall()
+            )
+        return [_workspace(row) for row in rows]
+
+    def incomplete_operations(self) -> list[OperationRecord]:
+        with self._lock:
+            rows = (
+                self._require_connection()
+                .execute("SELECT * FROM operations WHERE status IN ('pending', 'running')")
+                .fetchall()
+            )
+        return [_operation(row) for row in rows]
 
     def consume_nonce(self, nonce: str, expires_at: int, *, now: int | None = None) -> bool:
         timestamp = int(time.time()) if now is None else now

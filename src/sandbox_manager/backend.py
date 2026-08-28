@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .models import SandboxInfo, WorkspaceInfo
+from .models import OperationInfo, SandboxInfo, WorkspaceInfo
 
 
 class SandboxNotFoundError(Exception):
@@ -29,6 +29,10 @@ class WorkspaceNotFoundError(Exception):
     pass
 
 
+class OperationNotFoundError(Exception):
+    pass
+
+
 class SandboxBackend(Protocol):
     async def startup(self) -> None: ...
 
@@ -47,3 +51,7 @@ class SandboxBackend(Protocol):
     async def inspect_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo: ...
 
     async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo: ...
+
+    async def create_operation(self, grant: str) -> OperationInfo: ...
+
+    async def inspect_operation(self, operation_id: str) -> OperationInfo: ...

@@ -10,13 +10,17 @@ import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, Protocol
 
 import httpx
 
 
 class StorageOperationError(RuntimeError):
     pass
+
+
+class _BinaryWriter(Protocol):
+    def write(self, data: bytes, /) -> int: ...
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -170,7 +174,7 @@ def _download(
     client: httpx.Client,
     url: str,
     token: str,
-    output: BinaryIO,
+    output: _BinaryWriter,
     *,
     max_bytes: int,
 ) -> tuple[str, int]:

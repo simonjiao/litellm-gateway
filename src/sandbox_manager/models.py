@@ -37,6 +37,12 @@ class WorkspaceGrantRequest(BaseModel):
     grant: str = Field(min_length=16, max_length=64 * 1024)
 
 
+class OperationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
 class WorkspaceInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

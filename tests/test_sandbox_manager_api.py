@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from sandbox_manager.app import create_app
-from sandbox_manager.models import SandboxInfo, WorkerConnection, WorkspaceInfo
+from sandbox_manager.models import OperationInfo, SandboxInfo, WorkerConnection, WorkspaceInfo
 from sandbox_manager.settings import ManagerSettings
 
 
@@ -13,6 +13,7 @@ class StubBackend:
         self.renewed: list[str] = []
         self.terminated: list[str] = []
         self.created_workspaces: list[str] = []
+        self.created_operations: list[str] = []
         self.info = SandboxInfo(
             id="sandbox_test",
             status="running",
@@ -69,6 +70,26 @@ class StubBackend:
 
     async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
         raise NotImplementedError
+
+    async def create_operation(self, grant: str) -> OperationInfo:
+        self.created_operations.append(grant)
+        return OperationInfo(
+            id="operation_test",
+            operation="publish",
+            status="pending",
+            workspace_id="workspace_api_test01",
+            sandbox_id="sandbox_test",
+            result=None,
+            error=None,
+            created_at=10,
+            updated_at=10,
+        )
+
+    async def inspect_operation(self, operation_id: str) -> OperationInfo:
+        assert operation_id == "operation_test"
+        return (await self.create_operation("inspected")).model_copy(
+            update={"status": "succeeded", "result": {"file_id": "file_test"}}
+        )
 
 
 @pytest.mark.asyncio
@@ -133,3 +154,16 @@ async def test_sandbox_manager_exposes_only_authenticated_lifecycle_operations()
             assert workspace.status_code == 201
             assert workspace.json()["kind"] == "recoverable"
             assert backend.created_workspaces == ["workspace_api_test01"]
+
+            operation = await client.post(
+                "/v1/operations",
+                headers=headers,
+                json={"grant": "signed-operation-grant"},
+            )
+            assert operation.status_code == 202
+            assert operation.json()["status"] == "pending"
+            assert backend.created_operations == ["signed-operation-grant"]
+
+            completed = await client.get("/v1/operations/operation_test", headers=headers)
+            assert completed.status_code == 200
+            assert completed.json()["result"] == {"file_id": "file_test"}

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from sandbox_api import install_bearer_auth
 
 from .backend import (
+    OperationNotFoundError,
     SandboxAuthorizationError,
     SandboxBackend,
     SandboxBackendError,
@@ -20,6 +21,8 @@ from .backend import (
     WorkspaceNotFoundError,
 )
 from .models import (
+    OperationCreateRequest,
+    OperationInfo,
     SandboxCreateRequest,
     SandboxInfo,
     WorkspaceCreateRequest,
@@ -96,6 +99,13 @@ def create_app(
             content={"error": {"message": str(exc), "code": "workspace_not_found"}},
         )
 
+    @app.exception_handler(OperationNotFoundError)
+    async def operation_not_found(_: Request, exc: OperationNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"message": str(exc), "code": "operation_not_found"}},
+        )
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -129,5 +139,13 @@ def create_app(
     @app.post("/v1/workspaces/{workspace_id}/release", response_model=WorkspaceInfo)
     async def release_workspace(workspace_id: str, body: WorkspaceGrantRequest) -> WorkspaceInfo:
         return await sandbox_backend.release_workspace(workspace_id, body.grant)
+
+    @app.post("/v1/operations", response_model=OperationInfo, status_code=202)
+    async def create_operation(body: OperationCreateRequest) -> OperationInfo:
+        return await sandbox_backend.create_operation(body.grant)
+
+    @app.get("/v1/operations/{operation_id}", response_model=OperationInfo)
+    async def inspect_operation(operation_id: str) -> OperationInfo:
+        return await sandbox_backend.inspect_operation(operation_id)
 
     return app
