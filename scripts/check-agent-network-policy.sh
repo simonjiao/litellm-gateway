@@ -30,11 +30,13 @@ if [[ ! -r "${resolv_conf_file}" ]]; then
   exit 1
 fi
 
-compose_container() {
+service_container() {
   local service="$1"
+  local container_name="${COMPOSE_PROJECT_NAME:-agent}-${service}-1"
   local container_id
-  container_id="$(docker compose ps -q "${service}")"
-  if [[ -z "${container_id}" ]]; then
+  if ! container_id="$(
+    docker container inspect --format '{{if .State.Running}}{{.Id}}{{end}}' "${container_name}"
+  )" || [[ -z "${container_id}" ]]; then
     echo "Required service '${service}' is not running." >&2
     return 1
   fi
@@ -73,9 +75,9 @@ network_gateway() {
   printf '%s\n' "${gateway}"
 }
 
-adapter_container="$(compose_container adapter)"
-manager_container="$(compose_container sandbox-manager)"
-gateway_container="$(compose_container gateway)"
+adapter_container="$(service_container adapter)"
+manager_container="$(service_container sandbox-manager)"
+gateway_container="$(service_container gateway)"
 adapter_address="$(container_address "${adapter_container}" "${rpc_network}")"
 manager_address="$(container_address "${manager_container}" "${control_network}")"
 gateway_address="$(container_address "${gateway_container}" "${control_network}")"
