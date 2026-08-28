@@ -125,3 +125,44 @@ async def test_checkpoint_task_gets_one_workspace_and_prefix_scoped_sts(
     assert "parent-access" not in container.spec["environment"].values()
     object_resource = captured_policy["Statement"][1]["Resource"][0]
     assert object_resource == "arn:aws:s3:::agent-workspaces/repositories/workspace_scope_test/*"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_task_can_use_explicit_static_business_credentials(
+    tmp_path: Path,
+) -> None:
+    password_file = tmp_path / "restic-password"
+    password_file.write_text("repository-password")
+    settings = ManagerSettings(
+        storage_enabled=True,
+        object_store_endpoint="http://rustfs:9000",
+        object_store_credential_mode="static",
+        object_store_parent_access_key="business-access",
+        object_store_parent_secret_key=SecretStr("business-secret"),
+        workspace_bucket="agent-data",
+        workspace_prefix="workspaces",
+        restic_password_file=password_file,
+    )
+    docker_client = _OperationDocker()
+    runner = DockerOperationRunner(settings, docker_client)
+    workspace = WorkspaceRecord(
+        id="workspace_static_test",
+        kind="recoverable",
+        status="checkpointing",
+        volume_name="agent-workspace-static",
+        generation=1,
+        head_revision=None,
+        active_sandbox_id=None,
+        created_at=10,
+        updated_at=20,
+        delete_after=None,
+    )
+
+    await runner.checkpoint("operation_static", workspace)
+    await runner.close()
+
+    environment = docker_client.containers.created[0].spec["environment"]
+    assert environment["AWS_ACCESS_KEY_ID"] == "business-access"
+    assert environment["AWS_SECRET_ACCESS_KEY"] == "business-secret"
+    assert "AWS_SESSION_TOKEN" not in environment
+    assert environment["RESTIC_REPOSITORY"].endswith("/agent-data/workspaces/workspace_static_test")

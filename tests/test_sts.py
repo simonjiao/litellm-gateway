@@ -15,6 +15,7 @@ async def test_rustfs_sts_request_is_sigv4_signed_and_policy_scoped() -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         observed["authorization"] = request.headers["authorization"]
+        observed["content_sha256"] = request.headers["x-amz-content-sha256"]
         observed["body"] = request.content.decode()
         return httpx.Response(
             200,
@@ -49,6 +50,7 @@ async def test_rustfs_sts_request_is_sigv4_signed_and_policy_scoped() -> None:
     assert (
         "Credential=parent-access/20260101/us-east-1/s3/aws4_request" in observed["authorization"]
     )
+    assert len(observed["content_sha256"]) == 64
     form = parse_qs(observed["body"])
     assert form["Action"] == ["AssumeRole"]
     assert form["DurationSeconds"] == ["900"]

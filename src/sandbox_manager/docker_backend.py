@@ -173,12 +173,14 @@ class DockerSandboxBackend:
                 assert self._settings.object_store_endpoint is not None
                 assert self._settings.object_store_parent_access_key is not None
                 assert self._settings.object_store_parent_secret_key is not None
-                sts = RustFSSTSClient(
-                    self._settings.object_store_endpoint,
-                    self._settings.object_store_parent_access_key,
-                    self._settings.object_store_parent_secret_key.get_secret_value(),
-                    region=self._settings.object_store_region,
-                )
+                sts = None
+                if self._settings.object_store_credential_mode == "sts":
+                    sts = RustFSSTSClient(
+                        self._settings.object_store_endpoint,
+                        self._settings.object_store_parent_access_key,
+                        self._settings.object_store_parent_secret_key.get_secret_value(),
+                        region=self._settings.object_store_region,
+                    )
                 self._operation_runner = DockerOperationRunner(
                     self._settings,
                     self._docker,
@@ -713,17 +715,11 @@ class DockerSandboxBackend:
             ) from exc
         if self._settings.storage_enabled:
             try:
-                storage_network = await asyncio.to_thread(
-                    self._docker.networks.get, self._settings.storage_network
-                )
+                await asyncio.to_thread(self._docker.networks.get, self._settings.storage_network)
             except Exception as exc:
                 raise SandboxBackendError(
                     f"Docker network '{self._settings.storage_network}' is unavailable"
                 ) from exc
-            if storage_network.attrs.get("Internal") is not True:
-                raise SandboxBackendError(
-                    f"Docker network '{self._settings.storage_network}' must be internal"
-                )
             try:
                 await asyncio.to_thread(self._docker.images.get, self._settings.storage_ops_image)
             except Exception as exc:

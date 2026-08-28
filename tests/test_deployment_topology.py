@@ -16,12 +16,14 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     gateway = services["gateway"]
     adapter = services["adapter"]
     manager = services["sandbox-manager"]
+    webui = services["open-webui"]
 
     common_runtime = compose["x-common-runtime"]
     assert not {"build", "image", "command", "restart"} & common_runtime.keys()
     assert gateway["build"]["dockerfile"] == "deploy/gateway/Dockerfile"
     assert adapter["build"]["dockerfile"] == "deploy/responses-adapter/Dockerfile"
     assert manager["build"]["dockerfile"] == "deploy/sandbox-manager/Dockerfile"
+    assert webui["build"]["dockerfile"] == "deploy/open-webui/Dockerfile"
     assert gateway["image"] == "${AGENT_GATEWAY_IMAGE:-agent-gateway:0.3.0}"
     assert adapter["image"] == "${AGENT_ADAPTER_IMAGE:-agent-adapter:0.3.0}"
     assert manager["image"] == "${AGENT_SANDBOX_MANAGER_IMAGE:-agent-sandbox-manager:0.3.0}"
@@ -32,7 +34,7 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     assert manager["restart"] == "unless-stopped"
     assert set(gateway["networks"]) == {"control"}
     assert set(adapter["networks"]) == {"control", "agent-rpc"}
-    assert set(manager["networks"]) == {"control"}
+    assert set(manager["networks"]) == {"control", "storage"}
     assert "ports" in gateway
     assert "ports" not in adapter
     assert "ports" not in manager
@@ -52,18 +54,19 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     assert compose["volumes"]["sandbox-manager-state"]["name"] == (
         "${SANDBOX_MANAGER_STATE_VOLUME:-sandbox-manager-state}"
     )
+    assert compose["networks"]["storage"]["name"] == (
+        "${SANDBOX_MANAGER_STORAGE_NETWORK:-agent-storage}"
+    )
 
 
 def test_compose_deploys_open_webui_as_the_responses_client() -> None:
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     webui = compose["services"]["open-webui"]
 
-    assert webui["image"] == (
-        "${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.1}"
-    )
+    assert webui["image"] == "${AGENT_OPEN_WEBUI_IMAGE:-agent-open-webui:0.3.0}"
     assert webui["runtime"] == "runc"
     assert webui["restart"] == "no"
-    assert set(webui["networks"]) == {"control"}
+    assert set(webui["networks"]) == {"control", "storage"}
     assert webui["ports"] == ["${OPEN_WEBUI_PORT:-3000}:8080"]
     assert webui["environment"]["OPENAI_API_BASE_URL"] == "http://gateway:4000/v1"
     assert webui["environment"]["OPENAI_API_KEY"] == "${LITELLM_MASTER_KEY}"
@@ -80,6 +83,11 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
     assert webui["environment"]["WEBUI_SECRET_KEY"] == (
         "${OPEN_WEBUI_SECRET_KEY:?set OPEN_WEBUI_SECRET_KEY}"
     )
+    assert webui["environment"]["AGENT_ADAPTER_BASE_URL"] == "http://adapter:8090"
+    assert webui["environment"]["AGENT_INTERNAL_TRANSFER_BASE_URL"] == (
+        "http://open-webui:8080/api/agent/transfer"
+    )
+    assert webui["environment"]["S3_ADDRESSING_STYLE"] == "path"
     assert webui["depends_on"]["gateway"]["condition"] == "service_healthy"
     assert webui["volumes"] == ["open-webui-data:/app/backend/data"]
     assert compose["volumes"]["open-webui-data"]["name"] == (
@@ -114,11 +122,15 @@ def test_runtime_images_copy_only_their_required_components() -> None:
     adapter = (ROOT / "deploy" / "responses-adapter" / "Dockerfile").read_text()
     manager = (ROOT / "deploy" / "sandbox-manager" / "Dockerfile").read_text()
     worker = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
+    storage_ops = (ROOT / "deploy" / "storage-ops" / "Dockerfile").read_text()
+    webui = (ROOT / "deploy" / "open-webui" / "Dockerfile").read_text()
 
     assert "COPY src" not in gateway
     assert "COPY src/codex_responses_adapter" in adapter
     assert "COPY src/sandbox_manager ./src/sandbox_manager" in manager
     assert "COPY src/sandbox_worker ./src/sandbox_worker" in worker
+    assert "COPY src/storage_ops ./src/storage_ops" in storage_ops
+    assert "FROM ghcr.io/open-webui/open-webui:v0.11.1" in webui
     assert all("COPY src ./src" not in dockerfile for dockerfile in (adapter, manager, worker))
 
 
@@ -158,6 +170,17 @@ def test_stack_launcher_applies_both_agent_network_policies() -> None:
     assert "docker compose up" in launcher
     assert "apply-agent-rpc-policy.sh" in launcher
     assert "apply-agent-egress-policy.sh" in launcher
+    assert "build-storage-ops.sh" in launcher
+
+
+def test_open_webui_workspace_bridge_is_a_pinned_thin_patch() -> None:
+    dockerfile = (ROOT / "deploy" / "open-webui" / "Dockerfile").read_text()
+    patcher = (ROOT / "deploy" / "open-webui" / "apply_patch.py").read_text()
+
+    assert "FROM ghcr.io/open-webui/open-webui:v0.11.1" in dockerfile
+    assert "Open WebUI v0.11.1 patch anchor changed" in patcher
+    assert "inject_workspace_context" in patcher
+    assert "release_chat_workspace" in patcher
 
 
 def test_agent_egress_policy_allows_only_declared_destinations() -> None:
@@ -229,9 +252,10 @@ def test_runtime_images_use_domestic_registry_except_for_the_missing_litellm_rc(
     adapter = (ROOT / "deploy" / "responses-adapter" / "Dockerfile").read_text()
     manager = (ROOT / "deploy" / "sandbox-manager" / "Dockerfile").read_text()
     worker = (ROOT / "deploy" / "sandbox-worker" / "Dockerfile").read_text()
+    storage_ops = (ROOT / "deploy" / "storage-ops" / "Dockerfile").read_text()
 
     assert "PYPI_INDEX_URL" in compose
-    for dockerfile in (gateway, adapter, manager, worker):
+    for dockerfile in (gateway, adapter, manager, worker, storage_ops):
         assert "ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile
         assert 'PIP_INDEX_URL="${PYPI_INDEX_URL}"' in dockerfile
     assert "ARG LITELLM_INDEX_URL=https://pypi.org/simple" in gateway

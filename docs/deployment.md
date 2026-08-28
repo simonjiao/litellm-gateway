@@ -22,7 +22,7 @@
 | Open WebUI / 同源 BFF | `runc` | control、storage | 文件 ACL 与操作授权 |
 | LiteLLM Gateway | `runc` | control | 无 |
 | Responses Adapter | `runc` | control、agent-rpc | 无 |
-| Sandbox Manager | `runc` | control | 单实例；SQLite 状态卷；受管 Worker、Workspace 卷和一次性任务权限 |
+| Sandbox Manager | `runc` | control、storage | 单实例；SQLite 状态卷；受管 Worker、Workspace 卷和一次性任务权限 |
 | Sandbox Worker | `runsc` | agent-rpc、agent-egress | 独立工作区与 Runtime Secret |
 | 受控一次性任务 | `runc` | storage | 单 Workspace 挂载与单次操作授权 |
 | agent-dns | `runc` | agent-egress | 无 |
@@ -163,11 +163,11 @@ Sandbox Worker 和一次性任务分别使用独立镜像。公共 Compose 配�
 Manager 通过 Docker socket 创建 `runsc` Worker；Compose 通过
 `SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
-准备三个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
+准备四个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
 
 默认镜像为 `agent-open-webui:0.3.0`、`agent-gateway:0.3.0`、`agent-adapter:0.3.0`、
 `agent-sandbox-manager:0.3.0`、`codex-sandbox-worker:0.3.0` 和一次性任务镜像
-`agent-storage-ops:0.3.0`；分别通过 `OPEN_WEBUI_IMAGE`、`AGENT_GATEWAY_IMAGE`、
+`agent-storage-ops:0.3.0`；分别通过 `AGENT_OPEN_WEBUI_IMAGE`、`AGENT_GATEWAY_IMAGE`、
 `AGENT_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE`、`SANDBOX_IMAGE` 和
 `AGENT_STORAGE_OPS_IMAGE` 覆盖。
 
@@ -192,6 +192,14 @@ DEFAULT_MODELS: codex-terra
 ```
 
 用户在聊天输入区的模型选择器切换模型，无需修改前端。
+
+启用 `AGENT_WORKSPACE_ENABLED` 和 `SANDBOX_MANAGER_STORAGE_ENABLED` 后，同源 BFF 为对话创建
+Workspace，上传附件在 Agent 执行前 checkout；`POST /api/agent/artifacts/publish` 将指定
+Workspace 普通文件附加到对应助手消息，并返回 Open WebUI 鉴权下载链接。RustFS 连接、Files
+凭证和 Workspace STS 父凭证见 `.env.example`；`run-stack.sh` 首次启动时生成独立 restic
+repository password，后续启动复用。
+本地已有 rclone 业务凭证时，`scripts/configure-rustfs.py --remote rustfs` 将其导入 `.env` 并使用
+`static` 模式；生产环境默认使用支持 `AssumeRole` 的 `sts` 模式。
 
 首次注册用户成为管理员，之后公开注册关闭。Open WebUI 内置工具注入默认关闭；Agent 工具仍由
 Codex 和 MCP Gateway 管理。`OPEN_WEBUI_SECRET_KEY` 必须是独立、稳定的随机 Secret。

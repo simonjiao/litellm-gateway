@@ -12,6 +12,7 @@ fi
 control_network="${CONTROL_NETWORK:-agent-control}"
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
+storage_network="${SANDBOX_MANAGER_STORAGE_NETWORK:-agent-storage}"
 sandbox_runtime="${SANDBOX_MANAGER_DOCKER_RUNTIME:-runsc}"
 runtimes="$(docker info --format '{{json .Runtimes}}')"
 
@@ -54,7 +55,7 @@ ensure_network() {
   fi
 }
 
-for network_name in "${control_network}" "${rpc_network}" "${egress_network}"; do
+for network_name in "${control_network}" "${rpc_network}" "${egress_network}" "${storage_network}"; do
   if [[ "${network_name}" == "bridge" || "${network_name}" == "host" || "${network_name}" == "none" ]]; then
     echo "Built-in Docker network '${network_name}' cannot be used by this deployment." >&2
     exit 1
@@ -64,5 +65,6 @@ done
 ensure_network "${control_network}" false
 ensure_network "${rpc_network}" true
 ensure_network "${egress_network}" true
+ensure_network "${storage_network}" false
 
-echo "Networks are ready: control=${control_network}, agent-rpc=${rpc_network}, agent-egress=${egress_network}."
+echo "Networks are ready: control=${control_network}, agent-rpc=${rpc_network}, agent-egress=${egress_network}, storage=${storage_network}."

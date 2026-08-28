@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -68,7 +69,9 @@ class RustFSSTSClient:
         except httpx.HTTPError as exc:
             raise STSError(f"RustFS STS request failed: {exc}") from exc
         if response.status_code >= 400:
-            raise STSError(f"RustFS STS returned HTTP {response.status_code}")
+            code = _error_code(response.content)
+            suffix = f" ({code})" if code is not None else ""
+            raise STSError(f"RustFS STS returned HTTP {response.status_code}{suffix}")
         try:
             root = ElementTree.fromstring(response.content)
             values = {
@@ -97,9 +100,12 @@ class RustFSSTSClient:
         amz_date = timestamp.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = timestamp.strftime("%Y%m%d")
         content_type = "application/x-www-form-urlencoded"
-        canonical_headers = f"content-type:{content_type}\nhost:{host}\nx-amz-date:{amz_date}\n"
-        signed_headers = "content-type;host;x-amz-date"
         payload_hash = hashlib.sha256(body).hexdigest()
+        canonical_headers = (
+            f"content-type:{content_type}\nhost:{host}\n"
+            f"x-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+        )
+        signed_headers = "content-type;host;x-amz-content-sha256;x-amz-date"
         canonical_request = "\n".join(
             ["POST", canonical_uri, "", canonical_headers, signed_headers, payload_hash]
         )
@@ -122,6 +128,7 @@ class RustFSSTSClient:
         return {
             "Content-Type": content_type,
             "Host": host,
+            "X-Amz-Content-Sha256": payload_hash,
             "X-Amz-Date": amz_date,
             "Authorization": authorization,
         }
@@ -159,3 +166,14 @@ def _signature_key(secret_key: str, date: str, region: str, service: str) -> byt
     region_key = hmac.new(date_key, region.encode(), hashlib.sha256).digest()
     service_key = hmac.new(region_key, service.encode(), hashlib.sha256).digest()
     return hmac.new(service_key, b"aws4_request", hashlib.sha256).digest()
+
+
+def _error_code(content: bytes) -> str | None:
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError:
+        return None
+    code = root.findtext(".//{*}Code") or root.findtext(".//Code")
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code):
+        return code
+    return None

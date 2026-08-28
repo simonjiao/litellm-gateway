@@ -26,14 +26,15 @@ class DockerOperationRunner:
         settings: ManagerSettings,
         docker_client: Any,
         *,
-        sts_client: RustFSSTSClient,
+        sts_client: RustFSSTSClient | None = None,
     ) -> None:
         self._settings = settings
         self._docker = docker_client
         self._sts = sts_client
 
     async def close(self) -> None:
-        await self._sts.aclose()
+        if self._sts is not None:
+            await self._sts.aclose()
 
     async def checkpoint(self, operation_id: str, workspace: WorkspaceRecord) -> dict[str, Any]:
         environment, password_mount = await self._repository_access(workspace, writable=True)
@@ -136,14 +137,27 @@ class DockerOperationRunner:
         assert settings.workspace_bucket is not None
         assert settings.restic_password_file is not None
         prefix = f"{settings.workspace_prefix.strip('/')}/{workspace.id}"
-        credentials = await self._sts.assume_role(
-            duration_seconds=settings.sts_duration_seconds,
-            policy=workspace_session_policy(settings.workspace_bucket, prefix, writable=writable),
-        )
+        if settings.object_store_credential_mode == "sts":
+            if self._sts is None:
+                raise OperationExecutionError("STS credential mode is not initialized")
+            credentials = await self._sts.assume_role(
+                duration_seconds=settings.sts_duration_seconds,
+                policy=workspace_session_policy(
+                    settings.workspace_bucket, prefix, writable=writable
+                ),
+            )
+            access_key = credentials.access_key
+            secret_key = credentials.secret_key
+            session_token = credentials.session_token
+        else:
+            assert settings.object_store_parent_access_key is not None
+            assert settings.object_store_parent_secret_key is not None
+            access_key = settings.object_store_parent_access_key
+            secret_key = settings.object_store_parent_secret_key.get_secret_value()
+            session_token = None
         environment = {
-            "AWS_ACCESS_KEY_ID": credentials.access_key,
-            "AWS_SECRET_ACCESS_KEY": credentials.secret_key,
-            "AWS_SESSION_TOKEN": credentials.session_token,
+            "AWS_ACCESS_KEY_ID": access_key,
+            "AWS_SECRET_ACCESS_KEY": secret_key,
             "AWS_DEFAULT_REGION": settings.object_store_region,
             "RESTIC_REPOSITORY": (
                 f"s3:{settings.object_store_endpoint}/{settings.workspace_bucket}/{prefix}"
@@ -151,6 +165,8 @@ class DockerOperationRunner:
             "RESTIC_PASSWORD_FILE": "/run/secrets/restic-password",
             "RESTIC_CACHE_DIR": "/tmp/restic-cache",
         }
+        if session_token is not None:
+            environment["AWS_SESSION_TOKEN"] = session_token
         password_mount = {
             str(settings.restic_password_file): {
                 "bind": "/run/secrets/restic-password",

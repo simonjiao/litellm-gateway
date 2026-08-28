@@ -20,8 +20,8 @@ Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
 - 每个 Sandbox Worker 独占 `runsc` 容器、工作区和 Agent Runtime 会话。
 - Agent 互联网出站流量只能经过策略代理；容器之间使用 DNS，不固定 IP。
 
-实现状态：仓库已提供 Sandbox 创建、查询、续租、销毁和临时 Workspace；持久 Workspace、
-文件 checkout/publish 与对象存储快照不在现有实现中。
+实现状态：仓库已提供 Sandbox/Workspace 生命周期、对话绑定、文件 checkout/publish，以及
+基于 restic 和私有对象存储的后台 checkpoint/restore。
 
 ## 文档
 

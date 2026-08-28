@@ -15,6 +15,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     PIP_INDEX_URL="${PYPI_INDEX_URL}" pip install \
       "docker>=7.1,<8.0" \
       "fastapi>=0.115,<1.0" \
+      "httpx>=0.28,<1.0" \
       "pydantic>=2.10,<3.0" \
       "pydantic-settings>=2.7,<3.0" \
       "uvicorn>=0.33,<1.0" \

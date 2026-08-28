@@ -17,11 +17,14 @@ Open WebUI 配置 S3 只改变其文件对象后端，不会把笔记或对话�
 浏览器或 Sandbox 直接访问；它可以仅在内网提供服务。其他系统可用独立 bucket/prefix 和凭证
 复用该对象存储，但各自维护业务 ACL。
 
-Open WebUI 文件对象与 Workspace restic 仓库使用不同的 bucket/prefix 和服务凭证；restic
-repository password 作为第三个独立 Secret 保存。rclone 配置只用于部署检查，不作为运行凭证。
-Open WebUI 独占 Files 凭证；Manager 的专用 Workspace 父凭证只用于调用 RustFS STS。
-每个 Workspace 使用独立 restic repository prefix，一次性任务只收到该 prefix 的临时会话
-凭证，不共享跨 Workspace 去重。
+生产部署中，Open WebUI 文件对象与 Workspace restic 仓库使用不同的 bucket/prefix 和服务
+凭证；restic repository password 作为第三个独立 Secret 保存。Open WebUI 独占 Files 凭证；
+Manager 的专用 Workspace 父凭证只用于调用 RustFS STS。每个 Workspace 使用独立 restic
+repository prefix，一次性任务只收到该 prefix 的临时会话凭证，不共享跨 Workspace 去重。
+
+本地验收可由 `configure-rustfs.py` 导入现有 rclone 业务 AK/SK，并显式使用 `static` 模式；
+凭证只进入 Manager 创建的受信任一次性任务，任务结束即删除，Worker 不可见。生产环境使用
+可调用 `AssumeRole` 的独立 IAM 凭证和默认 `sts` 模式。
 
 ## 对话绑定
 

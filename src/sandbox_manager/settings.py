@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -12,7 +13,6 @@ class ManagerSettings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="SANDBOX_MANAGER_",
-        env_file=".env",
         extra="ignore",
     )
 
@@ -38,6 +38,7 @@ class ManagerSettings(BaseSettings):
     storage_task_timeout_seconds: int = Field(default=1800, ge=30, le=43200)
     object_store_endpoint: str | None = None
     object_store_region: str = "us-east-1"
+    object_store_credential_mode: Literal["sts", "static"] = "sts"
     object_store_parent_access_key: str | None = None
     object_store_parent_secret_key: SecretStr | None = None
     workspace_bucket: str | None = None

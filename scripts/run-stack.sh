@@ -19,6 +19,7 @@ source scripts/lib/internal-services.sh
 : "${CODEX_ADAPTER_API_KEY:?CODEX_ADAPTER_API_KEY is required}"
 : "${SANDBOX_MANAGER_API_KEY:?SANDBOX_MANAGER_API_KEY is required}"
 : "${SANDBOX_MANAGER_WORKER_TOKEN_SECRET:?SANDBOX_MANAGER_WORKER_TOKEN_SECRET is required}"
+: "${SANDBOX_MANAGER_OPERATION_SIGNING_SECRET:?SANDBOX_MANAGER_OPERATION_SIGNING_SECRET is required}"
 : "${OPEN_WEBUI_SECRET_KEY:?OPEN_WEBUI_SECRET_KEY is required}"
 
 project_root="$(pwd)"
@@ -38,6 +39,7 @@ if [[ "${secret_root}" != /* ]]; then
 fi
 secret_dir="${secret_root}/mounted"
 auth_file="${secret_dir}/auth.json"
+storage_enabled="${SANDBOX_MANAGER_STORAGE_ENABLED:-false}"
 if [[ ! -r "${auth_source}" ]]; then
   echo "Codex authentication file is not readable: ${auth_source}" >&2
   exit 1
@@ -58,6 +60,21 @@ fi
 install -d -m 0755 "${secret_dir}"
 if [[ "$(realpath "${auth_source}")" != "${auth_file}" ]]; then
   install -m 0444 "${auth_source}" "${auth_file}"
+fi
+
+if [[ "${storage_enabled,,}" == "true" ]]; then
+  : "${RUSTFS_ENDPOINT:?RUSTFS_ENDPOINT is required when storage is enabled}"
+  : "${OPEN_WEBUI_S3_ACCESS_KEY_ID:?OPEN_WEBUI_S3_ACCESS_KEY_ID is required}"
+  : "${OPEN_WEBUI_S3_SECRET_ACCESS_KEY:?OPEN_WEBUI_S3_SECRET_ACCESS_KEY is required}"
+  : "${WORKSPACE_S3_PARENT_ACCESS_KEY:?WORKSPACE_S3_PARENT_ACCESS_KEY is required}"
+  : "${WORKSPACE_S3_PARENT_SECRET_KEY:?WORKSPACE_S3_PARENT_SECRET_KEY is required}"
+  restic_password_file="${secret_dir}/restic-password"
+  if [[ ! -r "${restic_password_file}" ]]; then
+    umask 077
+    head -c 32 /dev/urandom | base64 >"${restic_password_file}"
+    chmod 0444 "${restic_password_file}"
+  fi
+  export SANDBOX_MANAGER_RESTIC_PASSWORD_FILE="${restic_password_file}"
 fi
 
 export SANDBOX_MANAGER_SECRET_DIR="${secret_dir}"
@@ -92,7 +109,10 @@ bash scripts/build-sandbox-worker.sh
 bash scripts/build-egress-proxy.sh
 bash scripts/build-agent-dns.sh
 bash scripts/build-network-policy.sh
-docker compose build gateway adapter sandbox-manager
+if [[ "${storage_enabled,,}" == "true" ]]; then
+  bash scripts/build-storage-ops.sh
+fi
+docker compose build open-webui gateway adapter sandbox-manager
 
 stop_entry_workloads_on_error() {
   docker compose stop open-webui gateway adapter >/dev/null 2>&1 || true
