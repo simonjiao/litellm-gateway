@@ -6,20 +6,28 @@ Sandbox Worker。
 ```text
 Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
                                       └──────────→ Sandbox Manager
+                                                        ├─ Sandbox / Workspace control
+                                                        └─ trusted one-shot operations
 ```
 
 - Gateway、Adapter 与 Sandbox Manager 使用普通 `runc` 容器。
 - Open WebUI 使用普通 `runc` 容器，并通过 Responses API 连接 Gateway。
 - Gateway 发布允许使用的模型目录，Open WebUI 动态发现并在聊天中选择。
 - Gateway、Adapter、Sandbox Manager 与 Sandbox Worker 使用独立运行镜像。
-- Sandbox Manager 只管理 Sandbox 生命周期。
+- Sandbox Manager 作为可信执行控制面，管理 Sandbox、Workspace 和受控文件操作；不代理
+  Agent 或文件数据面。
 - Adapter 直接与 Sandbox Worker 通信。
 - 每个 Sandbox Worker 独占 `runsc` 容器、工作区和 Agent Runtime 会话。
 - Agent 互联网出站流量只能经过策略代理；容器之间使用 DNS，不固定 IP。
 
+实现状态：仓库已提供 Sandbox 创建、查询、续租、销毁和临时 Workspace；持久 Workspace、
+文件 checkout/publish 与对象存储快照不在现有实现中。
+
 ## 文档
 
 - [系统设计](docs/design.md)
+- [Sandbox Manager](docs/sandbox-manager.md)
+- [文件与 Workspace 存储](docs/storage.md)
 - [部署设计](docs/deployment.md)
 - [Agent 出站策略](docs/egress-proxy.md)
 - [协议映射](docs/protocol-mapping.md)

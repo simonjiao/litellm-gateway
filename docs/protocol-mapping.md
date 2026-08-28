@@ -1,14 +1,15 @@
 # Responses、Codex app-server 与 MCP Apps 协议映射
 
-本文描述当前 Codex Sandbox Worker 的实现级协议，不定义上层架构接口。
+本文描述 Codex Sandbox Worker 的实现级协议，不定义上层架构接口。
 
 Adapter 通过 Sandbox Manager 创建、查询、续租和销毁 Sandbox，并直接连接 Sandbox
 Worker 驱动 `codex app-server`。生命周期接口不承载 Agent RPC/SSE，也不改变 Responses
-映射。
+映射。Workspace 和文件操作使用独立的 Manager 控制接口，不扩展 Responses 协议，见
+[Sandbox Manager 设计](sandbox-manager.md)。
 
 ## Sandbox 执行策略
 
-当前 Worker 启动 Codex 会话时使用：
+Worker 启动 Codex 会话时使用：
 
 ```json
 {
@@ -42,6 +43,13 @@ Worker 驱动 `codex app-server`。生命周期接口不承载 Agent RPC/SSE，�
 | 持久化/多实例恢复 | 可配置 | 不支持 | Adapter 状态为单进程内存 |
 
 MCP Apps 的资源、interaction 和 side-event 是本项目扩展；`mcp_call` item 与相关 Responses 事件保持标准形态。
+
+## 文件边界
+
+Responses 输入不解析 OpenAI file ID。Open WebUI `file_id` 的 checkout 和 Workspace 生成物
+publish 不属于 Responses 字段映射：Open WebUI/BFF 完成业务 ACL 后，通过独立、单次授权请求
+Manager 执行。Worker 只看到 Workspace 路径，`file_id` 本身不构成授权。上传、下载与发布流程
+见 [文件与 Workspace 存储](storage.md)。
 
 ## 请求映射
 
