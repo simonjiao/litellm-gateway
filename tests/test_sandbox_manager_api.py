@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from sandbox_manager.app import create_app
-from sandbox_manager.models import SandboxInfo, WorkerConnection
+from sandbox_manager.models import SandboxInfo, WorkerConnection, WorkspaceInfo
 from sandbox_manager.settings import ManagerSettings
 
 
@@ -12,6 +12,7 @@ class StubBackend:
     def __init__(self) -> None:
         self.renewed: list[str] = []
         self.terminated: list[str] = []
+        self.created_workspaces: list[str] = []
         self.info = SandboxInfo(
             id="sandbox_test",
             status="running",
@@ -29,7 +30,8 @@ class StubBackend:
     async def shutdown(self) -> None:
         return None
 
-    async def create(self) -> SandboxInfo:
+    async def create(self, workspace_grant: str | None = None) -> SandboxInfo:
+        assert workspace_grant is None
         return self.info
 
     async def inspect(self, sandbox_id: str) -> SandboxInfo:
@@ -46,6 +48,27 @@ class StubBackend:
         return self.info.model_copy(
             update={"status": "terminated", "expires_at": None, "worker": None}
         )
+
+    async def create_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        assert grant == "signed-workspace-create-grant"
+        self.created_workspaces.append(workspace_id)
+        return WorkspaceInfo(
+            id=workspace_id,
+            kind="recoverable",
+            status="detached_clean",
+            generation=0,
+            head_revision=None,
+            active_sandbox_id=None,
+            created_at=10,
+            updated_at=10,
+            delete_after=None,
+        )
+
+    async def inspect_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        raise NotImplementedError
+
+    async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        raise NotImplementedError
 
 
 @pytest.mark.asyncio
@@ -77,9 +100,7 @@ async def test_sandbox_manager_exposes_only_authenticated_lifecycle_operations()
             assert inspected.status_code == 200
             assert inspected.json()["status"] == "running"
 
-            renewed = await client.post(
-                "/v1/sandboxes/sandbox_test/lease", headers=headers
-            )
+            renewed = await client.post("/v1/sandboxes/sandbox_test/lease", headers=headers)
             assert renewed.status_code == 200
             assert renewed.json()["expires_at"] == 130
             assert backend.renewed == ["sandbox_test"]
@@ -92,15 +113,23 @@ async def test_sandbox_manager_exposes_only_authenticated_lifecycle_operations()
                 )
             ).status_code == 404
             assert (
-                await client.get(
-                    "/v1/sandboxes/sandbox_test/events", headers=headers
-                )
+                await client.get("/v1/sandboxes/sandbox_test/events", headers=headers)
             ).status_code == 404
 
-            terminated = await client.delete(
-                "/v1/sandboxes/sandbox_test", headers=headers
-            )
+            terminated = await client.delete("/v1/sandboxes/sandbox_test", headers=headers)
             assert terminated.status_code == 200
             assert terminated.json()["status"] == "terminated"
             assert terminated.json()["worker"] is None
             assert backend.terminated == ["sandbox_test"]
+
+            workspace = await client.post(
+                "/v1/workspaces",
+                headers=headers,
+                json={
+                    "workspace_id": "workspace_api_test01",
+                    "grant": "signed-workspace-create-grant",
+                },
+            )
+            assert workspace.status_code == 201
+            assert workspace.json()["kind"] == "recoverable"
+            assert backend.created_workspaces == ["workspace_api_test01"]

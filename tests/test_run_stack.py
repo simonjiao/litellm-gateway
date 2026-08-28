@@ -37,6 +37,7 @@ def _run_stack(
         "CODEX_ADAPTER_API_KEY=adapter-test-key\n"
         "SANDBOX_MANAGER_API_KEY=manager-test-key\n"
         "SANDBOX_MANAGER_WORKER_TOKEN_SECRET=worker-token-secret-at-least-32-bytes\n"
+        "SANDBOX_MANAGER_OPERATION_SIGNING_SECRET=operation-secret-at-least-32-bytes\n"
         f"SANDBOX_MANAGER_CODEX_AUTH_SOURCE_FILE={auth_file}\n"
         f"SANDBOX_MANAGER_DOCKER_SOCKET={fake_socket}\n"
         f"{extra_env}"

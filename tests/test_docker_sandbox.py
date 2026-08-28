@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from sandbox_manager.backend import SandboxBackendError, SandboxNotFoundError
+from sandbox_api.grants import issue_grant
+from sandbox_manager.backend import (
+    SandboxAuthorizationError,
+    SandboxBackendError,
+    SandboxNotFoundError,
+)
 from sandbox_manager.docker_backend import DockerSandboxBackend, build_container_spec
 from sandbox_manager.settings import ManagerSettings
 
@@ -64,9 +69,7 @@ def test_worker_container_spec_enforces_runtime_filesystem_and_network_boundarie
     assert spec["pids_limit"] == 256
     assert spec["environment"]["SANDBOX_WORKER_API_KEY"] == "worker-specific-secret"
     assert spec["environment"]["HTTPS_PROXY"] == "http://egress-proxy:3128"
-    assert spec["environment"]["NO_PROXY"] == (
-        "127.0.0.1,localhost,mcp-gateway,local-model"
-    )
+    assert spec["environment"]["NO_PROXY"] == ("127.0.0.1,localhost,mcp-gateway,local-model")
     assert spec["volumes"]["sandbox-workspace-sandbox_abc"] == {
         "bind": "/workspace",
         "mode": "rw",
@@ -275,6 +278,77 @@ async def test_manager_discards_workers_without_recoverable_lease_on_restart() -
             await second_backend.inspect(sandbox.id)
     finally:
         await second_backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recoverable_workspace_and_worker_survive_manager_restart(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "manager.db"
+    docker_client = _Docker(runtimes=["runsc"])
+    settings = _settings(
+        state_db_path=str(state_path),
+        operation_signing_secret="operation-secret-at-least-32-bytes",
+    )
+    first_backend = DockerSandboxBackend(settings, docker_client=docker_client)
+    await first_backend.startup()
+    workspace_id = "workspace_recoverable01"
+    create_grant = issue_grant(
+        settings.operation_signing_secret,
+        issuer="open-webui-bff",
+        audience="sandbox-manager",
+        operation="workspace_create",
+        workspace_id=workspace_id,
+    )
+    workspace = await first_backend.create_workspace(workspace_id, create_grant)
+    sandbox_grant = issue_grant(
+        settings.operation_signing_secret,
+        issuer="open-webui-bff",
+        audience="sandbox-manager",
+        operation="sandbox_create",
+        workspace_id=workspace_id,
+    )
+    sandbox = await first_backend.create(sandbox_grant)
+    await first_backend.shutdown()
+
+    second_backend = DockerSandboxBackend(settings, docker_client=docker_client)
+    await second_backend.startup()
+    try:
+        restored = await second_backend.inspect(sandbox.id)
+        assert restored.workspace_id == workspace.id
+        assert restored.recoverable is True
+        assert docker_client.containers.created[0].removed is False
+
+        await second_backend.terminate(sandbox.id)
+        workspace_volume = next(
+            volume
+            for name, volume in docker_client.volumes.items.items()
+            if name.startswith("agent-workspace-")
+        )
+        assert workspace_volume.removed is False
+    finally:
+        await second_backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_workspace_grant_is_single_use() -> None:
+    docker_client = _Docker(runtimes=["runsc"])
+    settings = _settings(operation_signing_secret="operation-secret-at-least-32-bytes")
+    backend = DockerSandboxBackend(settings, docker_client=docker_client)
+    await backend.startup()
+    grant = issue_grant(
+        settings.operation_signing_secret,
+        issuer="open-webui-bff",
+        audience="sandbox-manager",
+        operation="workspace_create",
+        workspace_id="workspace_replaytest",
+    )
+    try:
+        await backend.create_workspace("workspace_replaytest", grant)
+        with pytest.raises(SandboxAuthorizationError, match="already consumed"):
+            await backend.create_workspace("workspace_replaytest", grant)
+    finally:
+        await backend.shutdown()
 
 
 @pytest.mark.asyncio

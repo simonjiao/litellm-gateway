@@ -1,10 +1,68 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SandboxStatus = Literal["starting", "running", "failed", "terminated"]
+WorkspaceKind = Literal["ephemeral", "recoverable"]
+WorkspaceStatus = Literal[
+    "running",
+    "detached_dirty",
+    "checkpointing",
+    "detached_clean",
+    "remote_only",
+    "restoring",
+    "deleting",
+]
+OperationStatus = Literal["pending", "running", "succeeded", "failed"]
+
+
+class SandboxCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_grant: str | None = Field(default=None, max_length=64 * 1024)
+
+
+class WorkspaceCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(pattern=r"^workspace_[a-zA-Z0-9_-]{8,64}$")
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
+class WorkspaceGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
+class WorkspaceInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    kind: WorkspaceKind
+    status: WorkspaceStatus
+    generation: int
+    head_revision: str | None
+    active_sandbox_id: str | None
+    created_at: int
+    updated_at: int
+    delete_after: int | None
+
+
+class OperationInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    operation: str
+    status: OperationStatus
+    workspace_id: str
+    sandbox_id: str | None
+    result: dict[str, Any] | None
+    error: str | None
+    created_at: int
+    updated_at: int
 
 
 class WorkerConnection(BaseModel):
@@ -30,3 +88,5 @@ class SandboxInfo(BaseModel):
     created_at: int
     expires_at: int | None
     worker: WorkerConnection | None
+    workspace_id: str | None = None
+    recoverable: bool = False

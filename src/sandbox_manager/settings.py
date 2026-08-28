@@ -22,6 +22,12 @@ class ManagerSettings(BaseSettings):
     worker_token_secret: str = Field(
         default="local-worker-token-secret-change-me", min_length=32
     )
+    operation_signing_secret: str = Field(
+        default="local-operation-signing-secret-change-me", min_length=32
+    )
+    operation_grant_issuer: str = "open-webui-bff"
+    state_db_path: str = ":memory:"
+    workspace_delete_grace_seconds: int = Field(default=7 * 24 * 3600, ge=60)
 
     sandbox_image: str = Field(
         default="codex-sandbox-worker:0.3.0",
@@ -50,7 +56,14 @@ class ManagerSettings(BaseSettings):
     codex_config_file: Path | None = None
     mcp_apps_enabled: bool = True
 
-    @field_validator("docker_runtime", "rpc_network", "egress_network", "sandbox_image")
+    @field_validator(
+        "docker_runtime",
+        "rpc_network",
+        "egress_network",
+        "sandbox_image",
+        "operation_grant_issuer",
+        "state_db_path",
+    )
     @classmethod
     def non_empty(cls, value: str) -> str:
         value = value.strip()

@@ -20,7 +20,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       "uvicorn>=0.33,<1.0" \
     && groupadd --gid 10001 service \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin service \
-    && chown -R 10001:10001 /opt/sandbox-manager /home/service
+    && mkdir -p /var/lib/sandbox-manager \
+    && chown -R 10001:10001 /opt/sandbox-manager /home/service /var/lib/sandbox-manager
 
 USER 10001:10001
 EXPOSE 8092

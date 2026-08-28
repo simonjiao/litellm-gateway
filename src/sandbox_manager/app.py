@@ -11,8 +11,21 @@ from fastapi.responses import JSONResponse
 
 from sandbox_api import install_bearer_auth
 
-from .backend import SandboxBackend, SandboxBackendError, SandboxNotFoundError
-from .models import SandboxInfo
+from .backend import (
+    SandboxAuthorizationError,
+    SandboxBackend,
+    SandboxBackendError,
+    SandboxConflictError,
+    SandboxNotFoundError,
+    WorkspaceNotFoundError,
+)
+from .models import (
+    SandboxCreateRequest,
+    SandboxInfo,
+    WorkspaceCreateRequest,
+    WorkspaceGrantRequest,
+    WorkspaceInfo,
+)
 from .settings import ManagerSettings
 
 logger = logging.getLogger(__name__)
@@ -62,13 +75,36 @@ def create_app(
             content={"error": {"message": str(exc), "code": "sandbox_backend_error"}},
         )
 
+    @app.exception_handler(SandboxAuthorizationError)
+    async def authorization_error(_: Request, exc: SandboxAuthorizationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=403,
+            content={"error": {"message": str(exc), "code": "workspace_grant_invalid"}},
+        )
+
+    @app.exception_handler(SandboxConflictError)
+    async def conflict_error(_: Request, exc: SandboxConflictError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"error": {"message": str(exc), "code": "sandbox_conflict"}},
+        )
+
+    @app.exception_handler(WorkspaceNotFoundError)
+    async def workspace_not_found(_: Request, exc: WorkspaceNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"error": {"message": str(exc), "code": "workspace_not_found"}},
+        )
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.post("/v1/sandboxes", response_model=SandboxInfo, status_code=201)
-    async def create_sandbox() -> SandboxInfo:
-        return await sandbox_backend.create()
+    async def create_sandbox(body: SandboxCreateRequest | None = None) -> SandboxInfo:
+        if body is None or body.workspace_grant is None:
+            return await sandbox_backend.create()
+        return await sandbox_backend.create(body.workspace_grant)
 
     @app.get("/v1/sandboxes/{sandbox_id}", response_model=SandboxInfo)
     async def inspect_sandbox(sandbox_id: str) -> SandboxInfo:
@@ -81,5 +117,17 @@ def create_app(
     @app.delete("/v1/sandboxes/{sandbox_id}", response_model=SandboxInfo)
     async def terminate_sandbox(sandbox_id: str) -> SandboxInfo:
         return await sandbox_backend.terminate(sandbox_id)
+
+    @app.post("/v1/workspaces", response_model=WorkspaceInfo, status_code=201)
+    async def create_workspace(body: WorkspaceCreateRequest) -> WorkspaceInfo:
+        return await sandbox_backend.create_workspace(body.workspace_id, body.grant)
+
+    @app.post("/v1/workspaces/{workspace_id}/inspect", response_model=WorkspaceInfo)
+    async def inspect_workspace(workspace_id: str, body: WorkspaceGrantRequest) -> WorkspaceInfo:
+        return await sandbox_backend.inspect_workspace(workspace_id, body.grant)
+
+    @app.post("/v1/workspaces/{workspace_id}/release", response_model=WorkspaceInfo)
+    async def release_workspace(workspace_id: str, body: WorkspaceGrantRequest) -> WorkspaceInfo:
+        return await sandbox_backend.release_workspace(workspace_id, body.grant)
 
     return app
