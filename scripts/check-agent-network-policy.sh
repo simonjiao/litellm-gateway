@@ -9,7 +9,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-control_network="${CONTROL_NETWORK:-responses-control}"
+control_network="${CONTROL_NETWORK:-agent-control}"
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 worker_image="${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
@@ -73,7 +73,7 @@ network_gateway() {
   printf '%s\n' "${gateway}"
 }
 
-adapter_container="$(compose_container responses-adapter)"
+adapter_container="$(compose_container adapter)"
 manager_container="$(compose_container sandbox-manager)"
 gateway_container="$(compose_container gateway)"
 adapter_address="$(container_address "${adapter_container}" "${rpc_network}")"

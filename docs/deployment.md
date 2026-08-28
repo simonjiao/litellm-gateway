@@ -35,8 +35,8 @@ control 或通过等价私网访问 Adapter。Adapter、Manager 和 Worker 不�
 
 ```text
 Open WebUI → gateway.<control-domain>:<gateway-port>
-Gateway  → responses-adapter.<control-domain>:<responses-port>
-BFF      → responses-adapter.<control-domain>:<apps-port>
+Gateway  → adapter.<control-domain>:<responses-port>
+BFF      → adapter.<control-domain>:<apps-port>
 Adapter  → sandbox-manager.<control-domain>:<lifecycle-port>
 Adapter  → sandbox-worker-<execution-id>.<rpc-domain>:<worker-rpc-port>
 Worker   → egress-proxy.<egress-domain>:<proxy-port>
@@ -120,9 +120,9 @@ Manager 通过 Docker socket 创建 `runsc` Worker；当前 Compose 通过
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
 准备三个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
 
-默认镜像为 `agent-gateway:0.3.0`、`agent-responses-adapter:0.3.0`、
+默认镜像为 `agent-gateway:0.3.0`、`agent-adapter:0.3.0`、
 `agent-sandbox-manager:0.3.0` 和 `codex-sandbox-worker:0.3.0`；分别通过
-`AGENT_GATEWAY_IMAGE`、`AGENT_RESPONSES_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE` 和
+`AGENT_GATEWAY_IMAGE`、`AGENT_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE` 和
 `SANDBOX_IMAGE` 覆盖。
 
 Open WebUI 默认为 `ghcr.io/open-webui/open-webui:v0.11.1`，通过 `OPEN_WEBUI_IMAGE` 覆盖；

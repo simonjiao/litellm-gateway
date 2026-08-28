@@ -10,8 +10,11 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     services = compose["services"]
 
+    assert compose["name"] == "agent"
+    assert set(services) == {"open-webui", "gateway", "adapter", "sandbox-manager"}
+    assert compose["networks"]["control"]["name"] == "${CONTROL_NETWORK:-agent-control}"
     gateway = services["gateway"]
-    adapter = services["responses-adapter"]
+    adapter = services["adapter"]
     manager = services["sandbox-manager"]
 
     common_runtime = compose["x-common-runtime"]
@@ -20,9 +23,7 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     assert adapter["build"]["dockerfile"] == "deploy/responses-adapter/Dockerfile"
     assert manager["build"]["dockerfile"] == "deploy/sandbox-manager/Dockerfile"
     assert gateway["image"] == "${AGENT_GATEWAY_IMAGE:-agent-gateway:0.3.0}"
-    assert adapter["image"] == (
-        "${AGENT_RESPONSES_ADAPTER_IMAGE:-agent-responses-adapter:0.3.0}"
-    )
+    assert adapter["image"] == "${AGENT_ADAPTER_IMAGE:-agent-adapter:0.3.0}"
     assert manager["image"] == "${AGENT_SANDBOX_MANAGER_IMAGE:-agent-sandbox-manager:0.3.0}"
 
     assert gateway["runtime"] == "runc"
@@ -118,13 +119,13 @@ def test_entry_workload_restart_is_gated_by_host_network_policy() -> None:
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
 
     assert compose["services"]["gateway"]["restart"] == "no"
-    assert compose["services"]["responses-adapter"]["restart"] == "no"
+    assert compose["services"]["adapter"]["restart"] == "no"
 
 
 def test_compose_uses_dns_and_contains_no_fixed_network_address() -> None:
     text = (ROOT / "compose.yaml").read_text()
 
-    assert "http://responses-adapter:8090/v1" in text
+    assert "http://adapter:8090/v1" in text
     assert "http://sandbox-manager:8092" in text
     assert "ipv4_address" not in text
     assert "subnet:" not in text

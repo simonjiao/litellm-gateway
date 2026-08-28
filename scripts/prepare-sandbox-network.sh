@@ -9,7 +9,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-control_network="${CONTROL_NETWORK:-responses-control}"
+control_network="${CONTROL_NETWORK:-agent-control}"
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 sandbox_runtime="${SANDBOX_MANAGER_DOCKER_RUNTIME:-runsc}"

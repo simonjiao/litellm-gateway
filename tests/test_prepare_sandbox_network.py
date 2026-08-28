@@ -25,7 +25,7 @@ def test_existing_agent_network_must_be_a_local_ipv4_bridge(tmp_path: Path) -> N
         """#!/bin/sh
 case "$*" in
   "info --format {{json .Runtimes}}") printf '%s\\n' '{"runc":{},"runsc":{}}' ;;
-  *"--format {{.Internal}} responses-control") printf '%s\\n' false ;;
+  *"--format {{.Internal}} agent-control") printf '%s\\n' false ;;
   *"--format {{.Internal}} agent-rpc") printf '%s\\n' true ;;
   *"--format {{.Internal}} agent-egress") printf '%s\\n' true ;;
   *"--format {{.Driver}} agent-rpc") printf '%s\\n' overlay ;;

@@ -69,7 +69,7 @@ exit 0
         fake_bin / "docker",
         """#!/bin/sh
 case "$*" in
-  "compose ps -q responses-adapter") printf '%s\\n' adapter-id ;;
+  "compose ps -q adapter") printf '%s\\n' adapter-id ;;
   *"container inspect"*"missing"*) exit 1 ;;
   *"container inspect"*"io.litellm-codex-gateway.managed"*)
     printf '%s\\n' "${TEST_EGRESS_MEMBER_MANAGED:-}" ;;

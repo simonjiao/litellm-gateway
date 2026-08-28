@@ -22,7 +22,7 @@ input_dispatcher="LITELLM_AR_INPUT"
 input_chain_a="LITELLM_AR_I_A"
 input_chain_b="LITELLM_AR_I_B"
 
-adapter_container="$(docker compose ps -q responses-adapter)"
+adapter_container="$(docker compose ps -q adapter)"
 if [[ -z "${adapter_container}" ]]; then
   echo "Responses Adapter is not running." >&2
   exit 1

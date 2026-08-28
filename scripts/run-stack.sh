@@ -92,14 +92,14 @@ bash scripts/build-sandbox-worker.sh
 bash scripts/build-egress-proxy.sh
 bash scripts/build-agent-dns.sh
 bash scripts/build-network-policy.sh
-docker compose build gateway responses-adapter sandbox-manager
+docker compose build gateway adapter sandbox-manager
 
 stop_entry_workloads_on_error() {
-  docker compose stop open-webui gateway responses-adapter >/dev/null 2>&1 || true
+  docker compose stop open-webui gateway adapter >/dev/null 2>&1 || true
 }
 trap stop_entry_workloads_on_error ERR
 
-docker compose stop open-webui gateway responses-adapter
+docker compose stop open-webui gateway adapter
 bash scripts/run-egress-proxy.sh
 bash scripts/run-agent-dns.sh
 
@@ -109,7 +109,7 @@ if [[ ! -r "${resolv_conf_file}" ]]; then
 fi
 
 docker compose up --detach --wait --wait-timeout 120 --force-recreate \
-  sandbox-manager responses-adapter
+  sandbox-manager adapter
 bash scripts/apply-agent-rpc-policy.sh
 bash scripts/apply-agent-egress-policy.sh
 docker compose up --detach --wait --wait-timeout 120 --force-recreate --no-deps \

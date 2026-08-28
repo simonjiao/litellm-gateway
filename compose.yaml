@@ -1,4 +1,4 @@
-name: litellm-responses-gateway
+name: agent
 
 x-common-runtime: &common-runtime
   runtime: runc
@@ -57,7 +57,7 @@ services:
     restart: "no"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set LITELLM_MASTER_KEY}
-      CODEX_ADAPTER_BASE_URL: http://responses-adapter:8090/v1
+      CODEX_ADAPTER_BASE_URL: http://adapter:8090/v1
       CODEX_ADAPTER_API_KEY: ${CODEX_ADAPTER_API_KEY:?set CODEX_ADAPTER_API_KEY}
     ports:
       - ${LITELLM_PORT:-4000}:4000
@@ -71,19 +71,19 @@ services:
       timeout: 3s
       retries: 20
     depends_on:
-      responses-adapter:
+      adapter:
         condition: service_healthy
     networks:
       - control
 
-  responses-adapter:
+  adapter:
     <<: *common-runtime
     build:
       context: .
       dockerfile: deploy/responses-adapter/Dockerfile
       args:
         PYPI_INDEX_URL: ${PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
-    image: ${AGENT_RESPONSES_ADAPTER_IMAGE:-agent-responses-adapter:0.3.0}
+    image: ${AGENT_ADAPTER_IMAGE:-agent-adapter:0.3.0}
     restart: "no"
     environment:
       CODEX_ADAPTER_HOST: 0.0.0.0
@@ -175,7 +175,7 @@ services:
 networks:
   control:
     external: true
-    name: ${CONTROL_NETWORK:-responses-control}
+    name: ${CONTROL_NETWORK:-agent-control}
   agent-rpc:
     external: true
     name: ${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}

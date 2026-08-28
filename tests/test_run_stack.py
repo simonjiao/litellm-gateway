@@ -83,14 +83,14 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
     stop_entry_workloads = next(
         index
         for index, action in enumerate(actions)
-        if action == "docker compose stop open-webui gateway responses-adapter"
+        if action == "docker compose stop open-webui gateway adapter"
     )
     start_control = next(
         index
         for index, action in enumerate(actions)
         if action.startswith("docker compose up ")
         and "sandbox-manager" in action
-        and "responses-adapter" in action
+        and "adapter" in action
         and "gateway" not in action
     )
     apply_rpc = actions.index("bash scripts/apply-agent-rpc-policy.sh")
@@ -101,7 +101,7 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
         if action.startswith("docker compose up ")
         and "gateway" in action
         and "sandbox-manager" not in action
-        and "responses-adapter" not in action
+        and "adapter" not in action
     )
 
     assert stop_entry_workloads < start_control < apply_rpc < apply_egress < start_gateway
@@ -113,7 +113,7 @@ def test_stack_exposes_open_webui_only_after_gateway_is_ready(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     actions = action_log.read_text().splitlines()
     stop_entrypoints = actions.index(
-        "docker compose stop open-webui gateway responses-adapter"
+        "docker compose stop open-webui gateway adapter"
     )
     apply_egress = actions.index("bash scripts/apply-agent-egress-policy.sh")
     start_gateway = next(
@@ -123,7 +123,7 @@ def test_stack_exposes_open_webui_only_after_gateway_is_ready(tmp_path: Path) ->
         and "gateway" in action
         and "open-webui" not in action
         and "sandbox-manager" not in action
-        and "responses-adapter" not in action
+        and "adapter" not in action
     )
     start_webui = next(
         index
@@ -163,6 +163,6 @@ def test_stack_stops_entry_workloads_when_policy_application_fails(
     failed_policy = actions.index("bash scripts/apply-agent-egress-policy.sh")
     assert any(
         index > failed_policy
-        and action == "docker compose stop open-webui gateway responses-adapter"
+        and action == "docker compose stop open-webui gateway adapter"
         for index, action in enumerate(actions)
     )
