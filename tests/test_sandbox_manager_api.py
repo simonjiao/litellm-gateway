@@ -14,6 +14,7 @@ class StubBackend:
         self.terminated: list[str] = []
         self.created_workspaces: list[str] = []
         self.created_operations: list[str] = []
+        self.sandbox_workspace_grants: list[str] = []
         self.info = SandboxInfo(
             id="sandbox_test",
             status="running",
@@ -32,7 +33,14 @@ class StubBackend:
         return None
 
     async def create(self, workspace_grant: str | None = None) -> SandboxInfo:
-        assert workspace_grant is None
+        if workspace_grant is not None:
+            self.sandbox_workspace_grants.append(workspace_grant)
+            return self.info.model_copy(
+                update={
+                    "workspace_id": "workspace_api_test01",
+                    "recoverable": True,
+                }
+            )
         return self.info
 
     async def inspect(self, sandbox_id: str) -> SandboxInfo:
@@ -66,10 +74,13 @@ class StubBackend:
         )
 
     async def inspect_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
-        raise NotImplementedError
+        assert grant == "signed-workspace-inspect-grant"
+        return await self.create_workspace(workspace_id, "signed-workspace-create-grant")
 
     async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
-        raise NotImplementedError
+        assert grant == "signed-workspace-release-grant"
+        workspace = await self.inspect_workspace(workspace_id, "signed-workspace-inspect-grant")
+        return workspace.model_copy(update={"delete_after": 1000})
 
     async def create_operation(self, grant: str) -> OperationInfo:
         self.created_operations.append(grant)

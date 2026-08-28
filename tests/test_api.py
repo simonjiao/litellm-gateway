@@ -85,6 +85,49 @@ async def test_streaming_response(settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_and_artifact_control_routes_relay_signed_grants(
+    settings: Settings,
+) -> None:
+    sandbox = sandbox_for(settings)
+    app = create_app(settings, sandbox_client=sandbox)
+    headers = {"Authorization": f"Bearer {settings.api_key}"}
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers=headers,
+        ) as client:
+            workspace = await client.post(
+                "/v1/workspaces",
+                json={
+                    "workspace_id": "workspace_adapter_test01",
+                    "grant": "signed-workspace-create-grant",
+                },
+            )
+            assert workspace.status_code == 201
+            assert workspace.json()["id"] == "workspace_adapter_test01"
+
+            response = await client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.6-terra",
+                    "input": "produce a file",
+                    "metadata": {"agent_workspace_grant": "signed-sandbox-create-grant"},
+                },
+            )
+            assert response.status_code == 200, response.text
+            published = await client.post(
+                "/v1/artifacts/publish",
+                json={
+                    "response_id": response.json()["id"],
+                    "grant": "signed-artifact-publish-grant",
+                },
+            )
+            assert published.status_code == 200
+            assert published.json()["file_id"] == "file_test"
+
+
+@pytest.mark.asyncio
 async def test_rejects_unmapped_tools(settings: Settings) -> None:
     app = create_app(settings, sandbox_client=sandbox_for(settings))
     async with app.router.lifespan_context(app):

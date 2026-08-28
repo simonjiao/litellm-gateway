@@ -16,10 +16,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
+from sandbox_manager.models import WorkspaceInfo
+
 from .csp import render_mcp_resource
 from .errors import AdapterError
 from .mcp_apps import McpAppsState, McpAppToolCallRequest, ResolveInteractionRequest
-from .models import CreateResponseRequest
+from .models import (
+    ArtifactPublishRequest,
+    CreateResponseRequest,
+    WorkspaceGrantRelayRequest,
+    WorkspaceRelayRequest,
+)
 from .sandbox import HttpSandboxClient, SandboxClient
 from .service import CodexResponsesService
 from .settings import Settings
@@ -176,6 +183,31 @@ def create_app(
     async def list_input_items(response_id: str, request: Request) -> dict[str, Any]:
         service: CodexResponsesService = request.app.state.service
         return await service.list_input_items(response_id)
+
+    @app.post("/v1/workspaces", response_model=WorkspaceInfo, status_code=201)
+    async def create_workspace(
+        body: WorkspaceRelayRequest,
+        request: Request,
+    ) -> WorkspaceInfo:
+        service: CodexResponsesService = request.app.state.service
+        return await service.create_workspace(body.workspace_id, body.grant)
+
+    @app.post("/v1/workspaces/{workspace_id}/release", response_model=WorkspaceInfo)
+    async def release_workspace(
+        workspace_id: str,
+        body: WorkspaceGrantRelayRequest,
+        request: Request,
+    ) -> WorkspaceInfo:
+        service: CodexResponsesService = request.app.state.service
+        return await service.release_workspace(workspace_id, body.grant)
+
+    @app.post("/v1/artifacts/publish")
+    async def publish_artifact(
+        body: ArtifactPublishRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        service: CodexResponsesService = request.app.state.service
+        return await service.publish_artifact(body.response_id, body.grant)
 
     @app.get("/v1/mcp-apps/responses/{response_id}/state")
     async def mcp_app_state(response_id: str, request: Request) -> dict[str, Any]:

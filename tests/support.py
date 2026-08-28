@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from codex_responses_adapter.settings import Settings
-from sandbox_manager.models import SandboxInfo, WorkerConnection
+from sandbox_manager.models import OperationInfo, SandboxInfo, WorkerConnection, WorkspaceInfo
 from sandbox_worker.app import WorkerRuntime
 from sandbox_worker.models import AgentEvent
 from sandbox_worker.settings import WorkerSettings
@@ -24,13 +24,19 @@ class InProcessSandbox:
         self.renewed: list[str] = []
         self.terminated: list[str] = []
         self.rpc_calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.workspace_grants: list[str] = []
+        self.operation_grants: list[str] = []
+        self._recoverable: set[str] = set()
 
-    async def create_sandbox(self) -> SandboxInfo:
+    async def create_sandbox(self, workspace_grant: str | None = None) -> SandboxInfo:
         sandbox_id = f"sandbox_{uuid.uuid4().hex}"
         runtime = WorkerRuntime(self._settings)
         await runtime.start()
         self._runtimes[sandbox_id] = runtime
         self.started.append(sandbox_id)
+        if workspace_grant is not None:
+            self.workspace_grants.append(workspace_grant)
+            self._recoverable.add(sandbox_id)
         return self._info(sandbox_id)
 
     async def inspect_sandbox(self, sandbox_id: str) -> SandboxInfo:
@@ -81,6 +87,55 @@ class InProcessSandbox:
             worker=None,
         )
 
+    async def authorize_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        self.workspace_grants.append(grant)
+        now = int(time.time())
+        return WorkspaceInfo(
+            id=workspace_id,
+            kind="recoverable",
+            status="running",
+            generation=1,
+            head_revision=None,
+            active_sandbox_id=None,
+            created_at=now,
+            updated_at=now,
+            delete_after=None,
+        )
+
+    async def create_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        return await self.authorize_workspace(workspace_id, grant)
+
+    async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        workspace = await self.authorize_workspace(workspace_id, grant)
+        return workspace.model_copy(
+            update={"status": "detached_clean", "delete_after": int(time.time()) + 3600}
+        )
+
+    async def create_operation(self, grant: str) -> OperationInfo:
+        self.operation_grants.append(grant)
+        sandbox_id = self.started[-1]
+        now = int(time.time())
+        operation = "publish" if "publish" in grant else "checkout"
+        result = (
+            {"file_id": "file_test", "download_url": "/api/v1/files/file_test/content"}
+            if operation == "publish"
+            else {"path": "uploads/input.txt"}
+        )
+        return OperationInfo(
+            id=f"operation_{uuid.uuid4().hex}",
+            operation=operation,
+            status="succeeded",
+            workspace_id=f"workspace_{sandbox_id.removeprefix('sandbox_')}",
+            sandbox_id=sandbox_id,
+            result=result,
+            error=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def inspect_operation(self, operation_id: str) -> OperationInfo:
+        raise AssertionError(f"completed operation should not be polled: {operation_id}")
+
     async def aclose(self) -> None:
         for sandbox_id, runtime in list(self._runtimes.items()):
             await runtime.close()
@@ -97,6 +152,8 @@ class InProcessSandbox:
                 base_url=f"http://sandbox-worker-{sandbox_id}:8091",
                 api_key="worker-specific-secret",
             ),
+            workspace_id=f"workspace_{sandbox_id.removeprefix('sandbox_')}",
+            recoverable=sandbox_id in self._recoverable,
         )
 
 

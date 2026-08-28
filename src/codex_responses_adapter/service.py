@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_manager.models import OperationInfo, SandboxInfo, WorkspaceInfo
 from sandbox_worker.models import AgentEvent
 
 from .errors import InvalidRequestError, ResponseConflictError, UpstreamProtocolError
@@ -35,6 +37,13 @@ class PreparedExecution:
     record: ResponseRecord
     active: ActiveExecution
     builder: ResponsesEventBuilder
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkspaceContext:
+    grant: str | None
+    checkout_grants: tuple[str, ...]
+    public_metadata: dict[str, Any]
 
 
 class CodexResponsesService:
@@ -134,6 +143,31 @@ class CodexResponsesService:
             "last_id": last_id,
             "has_more": False,
         }
+
+    async def create_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        return await self._sandbox.create_workspace(workspace_id, grant)
+
+    async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        return await self._sandbox.release_workspace(workspace_id, grant)
+
+    async def publish_artifact(self, response_id: str, grant: str) -> dict[str, Any]:
+        record = await self._store.get(response_id)
+        if record.workspace_id is None or record.sandbox_id is None:
+            raise ResponseConflictError(
+                "The response has no active Workspace.",
+                code="workspace_unavailable",
+            )
+        operation = await self._sandbox.create_operation(grant)
+        operation = await self._wait_operation(operation)
+        if (
+            operation.status != "succeeded"
+            or operation.operation != "publish"
+            or operation.workspace_id != record.workspace_id
+            or operation.sandbox_id != record.sandbox_id
+            or operation.result is None
+        ):
+            raise UpstreamProtocolError(operation.error or "Workspace artifact publish failed")
+        return {"operation_id": operation.id, **operation.result}
 
     async def app_state(self, response_id: str) -> dict[str, Any]:
         await self._store.get(response_id)
@@ -281,9 +315,10 @@ class CodexResponsesService:
         await self._semaphore.acquire()
         created_sandbox_id: str | None = None
         try:
+            workspace_context = _workspace_context(request.metadata)
             mapped = map_responses_input(request.input, request.instructions)
             record = ResponseRecord.create(
-                request,
+                request.model_copy(update={"metadata": workspace_context.public_metadata}),
                 mapped.input_items,
                 mcp_apps_base_url=self._settings.mcp_apps_public_base_url,
             )
@@ -301,6 +336,29 @@ class CodexResponsesService:
                         "previous_response_id has no Sandbox mapping",
                         param="previous_response_id",
                     )
+                if previous.workspace_recoverable:
+                    if previous.workspace_id is None or workspace_context.grant is None:
+                        raise InvalidRequestError(
+                            "A Workspace grant is required to continue this response.",
+                            param="metadata",
+                            code="workspace_grant_required",
+                        )
+                    authorized = await self._sandbox.authorize_workspace(
+                        previous.workspace_id,
+                        workspace_context.grant,
+                    )
+                    if authorized.id != previous.workspace_id:
+                        raise InvalidRequestError(
+                            "The Workspace grant does not match previous_response_id.",
+                            param="previous_response_id",
+                            code="workspace_mismatch",
+                        )
+                elif workspace_context.grant is not None:
+                    raise InvalidRequestError(
+                        "An ephemeral response cannot switch to a recoverable Workspace.",
+                        param="previous_response_id",
+                        code="workspace_mismatch",
+                    )
                 try:
                     sandbox = await self._sandbox.inspect_sandbox(previous.sandbox_id)
                     if sandbox.status != "running" or sandbox.worker is None:
@@ -316,14 +374,26 @@ class CodexResponsesService:
                         "The Sandbox for previous_response_id is unavailable.",
                         code="sandbox_unavailable",
                     )
+                if sandbox.workspace_id != previous.workspace_id:
+                    raise ResponseConflictError(
+                        "The Sandbox Workspace for previous_response_id changed.",
+                        code="workspace_mismatch",
+                    )
             else:
-                sandbox = await self._sandbox.create_sandbox()
+                sandbox = await self._sandbox.create_sandbox(workspace_context.grant)
                 created_sandbox_id = sandbox.id
+                if workspace_context.grant is not None and (
+                    not sandbox.recoverable or sandbox.workspace_id is None
+                ):
+                    raise UpstreamProtocolError(
+                        "Sandbox Manager did not attach the authorized Workspace"
+                    )
 
             record.sandbox_id = sandbox.id
-            thread_id = await self._start_or_continue_thread(
-                sandbox.id, request, mapped, previous
-            )
+            record.workspace_id = sandbox.workspace_id
+            record.workspace_recoverable = sandbox.recoverable
+            await self._run_checkout_operations(sandbox, workspace_context.checkout_grants)
+            thread_id = await self._start_or_continue_thread(sandbox.id, request, mapped, previous)
             turn_params: dict[str, Any] = {
                 "threadId": thread_id,
                 "input": mapped.user_inputs,
@@ -378,6 +448,42 @@ class CodexResponsesService:
                     await self._sandbox.terminate_sandbox(created_sandbox_id)
             self._semaphore.release()
             raise
+
+    async def _run_checkout_operations(
+        self,
+        sandbox: SandboxInfo,
+        grants: tuple[str, ...],
+    ) -> None:
+        if not grants:
+            return
+        if sandbox.workspace_id is None:
+            raise UpstreamProtocolError("Sandbox Manager did not return a Workspace binding")
+        deadline = asyncio.get_running_loop().time() + self._settings.request_timeout_seconds
+        for grant in grants:
+            operation = await self._sandbox.create_operation(grant)
+            operation = await self._wait_operation(operation, deadline=deadline)
+            if (
+                operation.status != "succeeded"
+                or operation.workspace_id != sandbox.workspace_id
+                or operation.sandbox_id != sandbox.id
+            ):
+                raise UpstreamProtocolError(operation.error or "Workspace file checkout failed")
+
+    async def _wait_operation(
+        self,
+        operation: OperationInfo,
+        *,
+        deadline: float | None = None,
+    ) -> OperationInfo:
+        effective_deadline = deadline or (
+            asyncio.get_running_loop().time() + self._settings.request_timeout_seconds
+        )
+        while operation.status in {"pending", "running"}:
+            if asyncio.get_running_loop().time() >= effective_deadline:
+                raise UpstreamProtocolError("Workspace operation timed out")
+            await asyncio.sleep(0.1)
+            operation = await self._sandbox.inspect_operation(operation.id)
+        return operation
 
     async def _drive(self, prepared: PreparedExecution) -> None:
         active = prepared.active
@@ -454,9 +560,7 @@ class CodexResponsesService:
                 await asyncio.sleep(self._settings.sandbox_lease_renew_interval_seconds)
                 sandbox = await self._sandbox.renew_sandbox(active.sandbox_id)
                 if sandbox.status != "running" or sandbox.worker is None:
-                    raise SandboxUnavailableError(
-                        f"Sandbox '{active.sandbox_id}' is unavailable"
-                    )
+                    raise SandboxUnavailableError(f"Sandbox '{active.sandbox_id}' is unavailable")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -850,6 +954,67 @@ class CodexResponsesService:
                 param=name,
                 code="unsupported_parameter",
             )
+
+
+def _workspace_context(metadata: dict[str, Any] | None) -> _WorkspaceContext:
+    public_metadata = dict(metadata or {})
+    grant_value = public_metadata.pop("agent_workspace_grant", None)
+    checkout_value = public_metadata.pop("agent_checkout_grants", None)
+    if grant_value is not None and (
+        not isinstance(grant_value, str) or not 16 <= len(grant_value) <= 64 * 1024
+    ):
+        raise InvalidRequestError(
+            "The Workspace grant is invalid.",
+            param="metadata.agent_workspace_grant",
+            code="workspace_grant_invalid",
+        )
+
+    checkout_grants: list[Any]
+    if checkout_value is None:
+        checkout_grants = []
+    elif isinstance(checkout_value, str):
+        try:
+            parsed = json.loads(checkout_value)
+        except json.JSONDecodeError as exc:
+            raise InvalidRequestError(
+                "The checkout grants are invalid.",
+                param="metadata.agent_checkout_grants",
+                code="workspace_grant_invalid",
+            ) from exc
+        checkout_grants = parsed if isinstance(parsed, list) else []
+        if not isinstance(parsed, list):
+            raise InvalidRequestError(
+                "The checkout grants must be a list.",
+                param="metadata.agent_checkout_grants",
+                code="workspace_grant_invalid",
+            )
+    elif isinstance(checkout_value, list):
+        checkout_grants = checkout_value
+    else:
+        raise InvalidRequestError(
+            "The checkout grants are invalid.",
+            param="metadata.agent_checkout_grants",
+            code="workspace_grant_invalid",
+        )
+    if len(checkout_grants) > 32 or any(
+        not isinstance(value, str) or not 16 <= len(value) <= 64 * 1024 for value in checkout_grants
+    ):
+        raise InvalidRequestError(
+            "The checkout grants are invalid.",
+            param="metadata.agent_checkout_grants",
+            code="workspace_grant_invalid",
+        )
+    if checkout_grants and grant_value is None:
+        raise InvalidRequestError(
+            "File checkout requires a Workspace grant.",
+            param="metadata.agent_workspace_grant",
+            code="workspace_grant_required",
+        )
+    return _WorkspaceContext(
+        grant=grant_value,
+        checkout_grants=tuple(checkout_grants),
+        public_metadata=public_metadata,
+    )
 
 
 def _belongs_to_execution(notification: dict[str, Any], active: ActiveExecution) -> bool:

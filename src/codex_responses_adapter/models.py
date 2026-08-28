@@ -30,6 +30,26 @@ class CreateResponseRequest(BaseModel):
     service_tier: str | None = None
 
 
+class WorkspaceRelayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(pattern=r"^workspace_[a-zA-Z0-9_-]{8,64}$")
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
+class WorkspaceGrantRelayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
+class ArtifactPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    response_id: str = Field(pattern=r"^resp_[a-f0-9]{32}$")
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
 @dataclass(slots=True)
 class ResponseRecord:
     id: str
@@ -46,6 +66,8 @@ class ResponseRecord:
     service_tier: str | None
     mcp_apps_base_url: str
     sandbox_id: str | None = None
+    workspace_id: str | None = None
+    workspace_recoverable: bool = False
     thread_id: str | None = None
     turn_id: str | None = None
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex}")

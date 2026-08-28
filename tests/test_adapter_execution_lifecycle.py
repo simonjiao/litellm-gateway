@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 from support import InProcessSandbox
 
 from codex_responses_adapter.app import create_app
-from codex_responses_adapter.errors import UpstreamProtocolError
+from codex_responses_adapter.errors import InvalidRequestError, UpstreamProtocolError
 from codex_responses_adapter.models import CreateResponseRequest
 from codex_responses_adapter.settings import Settings
 from sandbox_worker.models import AgentEvent
@@ -112,10 +113,72 @@ async def test_previous_response_reuses_agent_session_sandbox() -> None:
         turn_calls = [params for _, method, params in sandbox.rpc_calls if method == "turn/start"]
         assert all(params["approvalPolicy"] == "never" for params in turn_calls)
         assert all(
-            params["sandboxPolicy"]
-            == {"type": "externalSandbox", "networkAccess": "restricted"}
+            params["sandboxPolicy"] == {"type": "externalSandbox", "networkAccess": "restricted"}
             for params in turn_calls
         )
+
+
+@pytest.mark.asyncio
+async def test_workspace_grants_are_relayed_but_never_stored_in_response_metadata() -> None:
+    settings, worker_settings = _settings()
+    sandbox = InProcessSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
+    create_grant = "workspace-create-grant-value"
+    checkout_grant = "artifact-checkout-grant-value"
+    inspect_grant = "workspace-inspect-grant-value"
+
+    async with app.router.lifespan_context(app):
+        first = await app.state.service.create_non_streaming(
+            CreateResponseRequest(
+                model="gpt-5.6-sol",
+                input="first",
+                metadata={
+                    "visible": "yes",
+                    "agent_workspace_grant": create_grant,
+                    "agent_checkout_grants": json.dumps([checkout_grant]),
+                },
+            )
+        )
+        first_record = await app.state.store.get(first["id"])
+        assert first["metadata"] == {"visible": "yes"}
+        assert first_record.workspace_recoverable is True
+        assert sandbox.operation_grants == [checkout_grant]
+
+        second = await app.state.service.create_non_streaming(
+            CreateResponseRequest(
+                model="gpt-5.6-sol",
+                input="continue",
+                previous_response_id=first["id"],
+                metadata={"agent_workspace_grant": inspect_grant},
+            )
+        )
+        second_record = await app.state.store.get(second["id"])
+        assert second_record.workspace_id == first_record.workspace_id
+        assert sandbox.workspace_grants == [create_grant, inspect_grant]
+
+
+@pytest.mark.asyncio
+async def test_recoverable_previous_response_requires_fresh_workspace_grant() -> None:
+    settings, worker_settings = _settings()
+    sandbox = InProcessSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
+
+    async with app.router.lifespan_context(app):
+        first = await app.state.service.create_non_streaming(
+            CreateResponseRequest(
+                model="gpt-5.6-sol",
+                input="first",
+                metadata={"agent_workspace_grant": "workspace-create-grant-value"},
+            )
+        )
+        with pytest.raises(InvalidRequestError, match="Workspace grant is required"):
+            await app.state.service.create_non_streaming(
+                CreateResponseRequest(
+                    model="gpt-5.6-sol",
+                    input="continue",
+                    previous_response_id=first["id"],
+                )
+            )
 
 
 @pytest.mark.asyncio

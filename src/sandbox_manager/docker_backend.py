@@ -272,7 +272,15 @@ class DockerSandboxBackend:
         idempotency_key: str
 
         if operation in {"checkout", "publish"}:
-            sandbox_id = _required_claim(claims, "sandbox_id")
+            claimed_sandbox_id = claims.get("sandbox_id")
+            if claimed_sandbox_id is None:
+                sandbox_id = workspace.active_sandbox_id
+                if sandbox_id is None:
+                    raise SandboxAuthorizationError("Operation Workspace has no active Sandbox")
+            elif isinstance(claimed_sandbox_id, str) and claimed_sandbox_id:
+                sandbox_id = claimed_sandbox_id
+            else:
+                raise SandboxAuthorizationError("Operation sandbox_id is invalid")
             try:
                 sandbox = self._state.get_sandbox(sandbox_id)
             except StateNotFoundError as exc:

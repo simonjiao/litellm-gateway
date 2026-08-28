@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from sandbox_manager.models import SandboxInfo, WorkerConnection
+from sandbox_manager.models import OperationInfo, SandboxInfo, WorkerConnection, WorkspaceInfo
 from sandbox_worker.models import AgentEvent
 
 from .errors import UpstreamProtocolError
@@ -17,7 +17,7 @@ class SandboxUnavailableError(UpstreamProtocolError):
 
 
 class SandboxClient(Protocol):
-    async def create_sandbox(self) -> SandboxInfo: ...
+    async def create_sandbox(self, workspace_grant: str | None = None) -> SandboxInfo: ...
 
     async def inspect_sandbox(self, sandbox_id: str) -> SandboxInfo: ...
 
@@ -39,6 +39,16 @@ class SandboxClient(Protocol):
     ) -> None: ...
 
     async def terminate_sandbox(self, sandbox_id: str) -> SandboxInfo: ...
+
+    async def authorize_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo: ...
+
+    async def create_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo: ...
+
+    async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo: ...
+
+    async def create_operation(self, grant: str) -> OperationInfo: ...
+
+    async def inspect_operation(self, operation_id: str) -> OperationInfo: ...
 
     async def aclose(self) -> None: ...
 
@@ -68,8 +78,9 @@ class HttpSandboxClient:
         )
         self._connections: dict[str, WorkerConnection] = {}
 
-    async def create_sandbox(self) -> SandboxInfo:
-        response = await self._manager_request("POST", "/v1/sandboxes")
+    async def create_sandbox(self, workspace_grant: str | None = None) -> SandboxInfo:
+        body = {"workspace_grant": workspace_grant} if workspace_grant is not None else None
+        response = await self._manager_request("POST", "/v1/sandboxes", json_body=body)
         return self._remember(SandboxInfo.model_validate(_json_object(response, "Manager")))
 
     async def inspect_sandbox(self, sandbox_id: str) -> SandboxInfo:
@@ -77,9 +88,7 @@ class HttpSandboxClient:
         return self._remember(SandboxInfo.model_validate(_json_object(response, "Manager")))
 
     async def renew_sandbox(self, sandbox_id: str) -> SandboxInfo:
-        response = await self._manager_request(
-            "POST", f"/v1/sandboxes/{sandbox_id}/lease"
-        )
+        response = await self._manager_request("POST", f"/v1/sandboxes/{sandbox_id}/lease")
         return self._remember(SandboxInfo.model_validate(_json_object(response, "Manager")))
 
     async def rpc(self, sandbox_id: str, method: str, params: dict[str, Any]) -> Any:
@@ -117,9 +126,7 @@ class HttpSandboxClient:
                 async for payload in _sse_json(response):
                     yield AgentEvent.model_validate(payload)
         except httpx.HTTPError as exc:
-            raise UpstreamProtocolError(
-                f"Sandbox Worker event stream failed: {exc}"
-            ) from exc
+            raise UpstreamProtocolError(f"Sandbox Worker event stream failed: {exc}") from exc
 
     async def resolve_server_request(
         self,
@@ -142,6 +149,42 @@ class HttpSandboxClient:
         self._connections.pop(sandbox_id, None)
         return SandboxInfo.model_validate(_json_object(response, "Manager"))
 
+    async def authorize_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        response = await self._manager_request(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/inspect",
+            json_body={"grant": grant},
+        )
+        return WorkspaceInfo.model_validate(_json_object(response, "Manager"))
+
+    async def create_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        response = await self._manager_request(
+            "POST",
+            "/v1/workspaces",
+            json_body={"workspace_id": workspace_id, "grant": grant},
+        )
+        return WorkspaceInfo.model_validate(_json_object(response, "Manager"))
+
+    async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
+        response = await self._manager_request(
+            "POST",
+            f"/v1/workspaces/{workspace_id}/release",
+            json_body={"grant": grant},
+        )
+        return WorkspaceInfo.model_validate(_json_object(response, "Manager"))
+
+    async def create_operation(self, grant: str) -> OperationInfo:
+        response = await self._manager_request(
+            "POST",
+            "/v1/operations",
+            json_body={"grant": grant},
+        )
+        return OperationInfo.model_validate(_json_object(response, "Manager"))
+
+    async def inspect_operation(self, operation_id: str) -> OperationInfo:
+        response = await self._manager_request("GET", f"/v1/operations/{operation_id}")
+        return OperationInfo.model_validate(_json_object(response, "Manager"))
+
     async def aclose(self) -> None:
         await self._manager.aclose()
         if self._worker is not self._manager:
@@ -163,12 +206,19 @@ class HttpSandboxClient:
             self._connections.pop(sandbox.id, None)
         return sandbox
 
-    async def _manager_request(self, method: str, path: str) -> httpx.Response:
+    async def _manager_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+    ) -> httpx.Response:
         try:
             response = await self._manager.request(
                 method,
                 f"{self._manager_base_url}{path}",
                 headers=self._manager_headers,
+                json=json_body,
             )
         except httpx.HTTPError as exc:
             raise UpstreamProtocolError(f"Sandbox Manager request failed: {exc}") from exc
@@ -242,6 +292,4 @@ def _raise_upstream(response: httpx.Response, upstream: str) -> None:
         error = body.get("error")
         if isinstance(error, dict) and isinstance(error.get("message"), str):
             message = error["message"]
-    raise UpstreamProtocolError(
-        message or f"{upstream} returned HTTP {response.status_code}"
-    )
+    raise UpstreamProtocolError(message or f"{upstream} returned HTTP {response.status_code}")

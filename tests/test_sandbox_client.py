@@ -109,4 +109,24 @@ async def test_adapter_uses_manager_for_lifecycle_and_worker_for_rpc_and_events(
             assert terminated.status == "terminated"
             assert backend.renewed == ["sandbox_test"]
             assert backend.terminated == ["sandbox_test"]
+
+            recoverable = await client.create_sandbox("signed-sandbox-create-grant")
+            assert recoverable.recoverable is True
+            assert backend.sandbox_workspace_grants == ["signed-sandbox-create-grant"]
+            workspace = await client.authorize_workspace(
+                "workspace_api_test01", "signed-workspace-inspect-grant"
+            )
+            assert workspace.id == "workspace_api_test01"
+            created_workspace = await client.create_workspace(
+                "workspace_client_test01", "signed-workspace-create-grant"
+            )
+            assert created_workspace.id == "workspace_client_test01"
+            released_workspace = await client.release_workspace(
+                "workspace_client_test01", "signed-workspace-release-grant"
+            )
+            assert released_workspace.delete_after == 1000
+            operation = await client.create_operation("signed-operation-grant")
+            assert operation.id == "operation_test"
+            completed = await client.inspect_operation(operation.id)
+            assert completed.status == "succeeded"
             await client.aclose()
