@@ -38,6 +38,7 @@ packages = [
   "src/sandbox_api",
   "src/sandbox_manager",
   "src/sandbox_worker",
+  "src/storage_ops",
 ]
 
 [tool.pytest.ini_options]
