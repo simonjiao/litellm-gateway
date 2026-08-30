@@ -10,7 +10,7 @@
 - 支持方向和连接状态的网络访问控制；
 - Secret、持久卷、健康检查和资源限额；
 - Manager 控制状态的持久化和重启对账能力；
-- Open WebUI Files 可访问的私有对象存储；
+- Artifact Service 可访问的私有对象存储；
 - control 网络域的默认外网，以及 Agent 的默认拒绝外网。
 
 这些要求不限定 Docker、Kubernetes 或其他编排实现。
@@ -19,7 +19,8 @@
 
 | 工作负载 | Runtime | 网络域 | 特殊权限 |
 |---|---|---|---|
-| Open WebUI / 同源 BFF | `runc` | control、storage | 文件 ACL 与操作授权 |
+| Open WebUI / 同源 BFF | `runc` | control | 文件 ACL 与操作授权 |
+| Artifact Service | `runc` | control、storage | 短期数据入口和 Artifact 对象前缀 |
 | LiteLLM Gateway | `runc` | control | 无 |
 | Responses Adapter | `runc` | control、agent-rpc | 无 |
 | Sandbox Manager | `runc` | control、storage | 单实例；SQLite 状态卷；受管 Worker、Workspace 卷和一次性任务权限 |
@@ -30,7 +31,11 @@
 
 一次性任务按 checkout、publish、checkpoint、restore 或 retire 动态创建，不是常驻传输服务。
 Open WebUI 暴露用户界面，Gateway 暴露 Responses 入口。BFF 可作为 Open WebUI 的同源后端
-扩展，不要求独立公共服务。Adapter、Manager、Worker 和一次性任务不暴露公共端口。
+扩展；Artifact Service 通过带 TLS 的入口服务 BFF 和外部 MCP App。Adapter、Manager、Worker
+和一次性任务不暴露公共端口。
+
+现有 RustFS endpoint 可使用内网 HTTP，但只能位于隔离的 `storage` 网络且不得发布公共端口；
+Artifact Service/BFF 的外部入口负责 TLS。跨不可信网络连接 RustFS 时才需额外加密。
 
 ## 服务发现
 
@@ -41,10 +46,11 @@ Open WebUI 暴露用户界面，Gateway 暴露 Responses 入口。BFF 可作为 
 Open WebUI → gateway.<control-domain>:<gateway-port>
 Gateway  → adapter.<control-domain>:<responses-port>
 BFF      → adapter.<control-domain>:<apps-port>
+BFF/MCP  → artifact-service.<control-domain>:<artifact-port>
 Adapter  → sandbox-manager.<control-domain>:<control-port>
 Adapter  → sandbox-worker-<execution-id>.<rpc-domain>:<worker-rpc-port>
 Worker   → egress-proxy.<egress-domain>:<proxy-port>
-one-shot → files.<storage-domain>:<files-port> | object-store.<storage-domain>:<storage-port>
+one-shot → artifact-service.<storage-domain>:<artifact-port> | object-store.<storage-domain>:<storage-port>
 ```
 
 Manager 为每个 Worker 分配不可预测的服务名和独立凭证，并在健康检查通过后返回给 Adapter。
@@ -56,16 +62,17 @@ Agent DNS 只解析策略代理和明确允许的内部接口。
 
 ```text
 allow  Gateway/BFF → Adapter
+allow  BFF/MCP Host → Artifact Service
 allow  Adapter → Sandbox Manager
 allow  Adapter → Worker RPC/SSE NEW
 allow  Worker → agent-dns:53 UDP/TCP
 allow  Worker → approved internal interfaces
 allow  ESTABLISHED,RELATED
 deny   Worker → Adapter/Manager NEW
-deny   Worker → Files/object-storage NEW
+deny   Worker → Artifact Service/object-storage NEW
 deny   Worker → Internet DIRECT
 allow  Worker → egress-proxy
-allow  one-shot → operation-scoped Files/object-storage endpoint
+allow  one-shot → operation-scoped Artifact/object-storage endpoint
 ```
 
 规则应基于工作负载身份、标签、网络域或运行时发现的数据生成，不依赖固定 IP。Adapter 的
@@ -83,13 +90,14 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
 ## 权限与 Secret
 
 - Manager 只获得管理受管 Worker、Workspace 卷和一次性任务所需的运行平台权限；不持有
-  Open WebUI Files 或业务 ACL 权限。
+  Artifact Service 或业务 ACL 权限。
+- Artifact Service 只持有 Artifact prefix 权限，不持有 Workspace 或运行平台权限。
 - Adapter 不持有运行平台控制凭证。
 - Worker 不持有 Adapter、Manager、Open WebUI、对象存储或运行平台凭证。
 - 一次性任务最多挂载一个 Workspace，并只持有当前操作的短期、最小权限凭证。
 - Gateway、Manager、Adapter 和 Worker 使用不同的部署凭证。
 - BFF 与 Manager 共享独立的操作签名 Secret；Adapter 只能转交签名令牌。
-- Open WebUI Files 与 Workspace restic 仓库使用不同的 S3 凭证；restic repository password
+- Artifact 内容与 Workspace restic 仓库使用不同的 S3 凭证；restic repository password
   使用独立 Secret。
 - Manager 的 RustFS 父凭证仅限 Workspace repository 范围，用 STS 为单次任务签发
   15–60 分钟的 prefix/action 限定会话；任务不持有父凭证。
@@ -134,45 +142,45 @@ MCP App 交互续租；终态 Response 不保持无限租约。Sandbox 过期后
 
 ## 实现方案与规模
 
-Open WebUI 使用以 v0.11.1 为基线的派生镜像，只增加同源 BFF 路由和最小消息附件集成，并直接
-复用上游认证、Chats、Files 与 Storage。Manager 使用标准库 SQLite WAL；checkout/publish
-构成 Manager 内部的 Workspace 文件桥接能力，使用同一个轻量 `storage-ops` 一次性任务镜像；
-checkpoint/restore 直接调用镜像内的 restic。宿主机不安装 restic，RustFS STS 负责临时 S3
-凭证，不增加独立 Bridge 或常驻传输服务。现有
-`DockerSandboxBackend` 保留为运行平台实现，扩展卷、标签和一次性任务管理。
+Open WebUI 使用以 v0.11.1 为基线的派生镜像，只增加同源 BFF、消息 Artifact 绑定和最小发布
+操作。Artifact Service 复用现有 FastAPI/Pydantic、boto3 和签名授权代码；RustFS 中不可变
+manifest 是提交标记，不新增 PostgreSQL、任务队列、断点续传协议或文件浏览器。服务无状态，
+文件流不落本地磁盘。
 
-以下为本次需新增或重写的手写逻辑估算，不含现有未改代码、Open WebUI 上游代码、
-restic、生成文件和依赖锁文件：
+Manager 继续使用 SQLite WAL；checkout/publish 构成其内部 Workspace 文件桥接能力，并复用
+同一个 `storage-ops` 一次性任务镜像。checkpoint/restore 直接调用镜像内的 restic；不增加独立
+Bridge 服务。现有 `DockerSandboxBackend` 保留为运行平台实现。
+
+以下仅估算相对当前仓库仍需新增或重写的手写逻辑，不重复计算已经落地的 Workspace 生命周期、
+Open WebUI 路由、restic 操作和授权基础：
 
 | 分类 | 实现内容 | 生产代码 | 测试代码 |
 |---|---|---:|---:|
-| Open WebUI/BFF | 对话映射、ACL、Turn/批次授权、受控 Files 传输和消息附件 | 350–550 行 | 250–400 行 |
-| Adapter | 内部 Workspace 授权转交、敏感 metadata 剥离和操作调用 | 100–180 行 | 100–160 行 |
-| Manager 状态与接口 | SQLite schema/repository、模型、事务、nonce、STS 和控制接口 | 350–550 行 | 300–450 行 |
-| Manager Docker 控制 | 卷与 Sandbox 解耦、目录/单写者、对账、reaper 和一次性任务编排 | 500–750 行 | 450–650 行 |
-| 一次性任务 | 批次 checkout、publish 快照、restic 调用和结果清单 | 200–350 行 | 150–250 行 |
-| 部署与验收 | 镜像、Compose、Secret、storage 网络、脚本和 smoke | 150–250 行 | 150–250 行 |
-| 合计 | — | 1,650–2,630 行 | 1,400–2,160 行 |
+| Artifact 薄网关 | manifest、流式上传下载、摘要和短期 capability | 250–400 行 | 200–350 行 |
+| BFF 与 MCP 接入 | 消息绑定、稳定链接、App capability 转交 | 180–300 行 | 160–280 行 |
+| Workspace Bridge | Turn 目录、批次 checkout、publish 快照和崩溃对账 | 250–450 行 | 250–400 行 |
+| 部署与 smoke | 镜像、配置、网络规则和端到端验收 | 100–180 行 | 100–180 行 |
+| 合计 | — | 780–1,330 行 | 710–1,210 行 |
 
-总实现规模预计为 3,050–4,790 行，其中约一半用于隔离、失败恢复和验收。实施顺序固定为：
-Manager 持久状态与 Workspace 卷、checkpoint/restore、Open WebUI/BFF 与 Adapter 绑定、
-checkout/publish、端到端部署验收。
+预计剩余增量合计约 1,490–2,540 行，其中生产逻辑少于 1,400 行。首版不引入 Temporal；现有
+Manager SQLite 状态机已经覆盖当前小时级任务，Temporal 会新增服务、持久化和 Worker 编排，
+但不会替代路径隔离、原子目录提交、S3 传输或 Docker 对账。实施顺序为 Artifact 薄网关、
+BFF/MCP 复用接入、原子 Workspace Bridge 和端到端验收。
 
 ## Docker 参考部署
 
-仓库中的 `compose.yaml` 将 Open WebUI、Gateway、Adapter 和 Sandbox Manager 作为独立
-`runc` 服务部署；Open WebUI 从固定上游基线构建派生镜像，Gateway、Adapter、Manager、
-Sandbox Worker 和一次性任务分别使用独立镜像。公共 Compose 配置只复用运行时加固项。
+目标参考部署将 Open WebUI、Artifact Service、Gateway、Adapter 和 Sandbox Manager 作为独立
+`runc` 服务部署；Open WebUI 从固定上游基线构建派生镜像，其他
+工作负载分别使用独立镜像。公共 Compose 配置只复用运行时加固项。
 Manager 通过 Docker socket 创建 `runsc` Worker；Compose 通过
 `SANDBOX_MANAGER_DOCKER_SOCKET` 注入本地 Engine 或授权代理的 Unix socket。该接口不能限制
 对象范围时，应将参考部署置于专用 Docker Engine 或专用节点。`run-stack.sh` 负责构建镜像、
 准备四个逻辑网络、启动 DNS、策略代理和内部服务，应用方向性规则后才启动 Gateway：
 
-默认镜像为 `agent-open-webui:0.3.0`、`agent-gateway:0.3.0`、`agent-adapter:0.3.0`、
-`agent-sandbox-manager:0.3.0`、`codex-sandbox-worker:0.3.0` 和一次性任务镜像
-`agent-storage-ops:0.3.0`；分别通过 `AGENT_OPEN_WEBUI_IMAGE`、`AGENT_GATEWAY_IMAGE`、
-`AGENT_ADAPTER_IMAGE`、`AGENT_SANDBOX_MANAGER_IMAGE`、`SANDBOX_IMAGE` 和
-`AGENT_STORAGE_OPS_IMAGE` 覆盖。
+默认镜像为 `agent-open-webui:0.3.0`、`agent-artifact-service:0.3.0`、
+`agent-gateway:0.3.0`、`agent-adapter:0.3.0`、`agent-sandbox-manager:0.3.0`、
+`codex-sandbox-worker:0.3.0` 和一次性任务镜像 `agent-storage-ops:0.3.0`；分别通过对应的
+`AGENT_*_IMAGE`、`SANDBOX_IMAGE` 和 `AGENT_STORAGE_OPS_IMAGE` 覆盖。
 
 `agent-open-webui` 以 `ghcr.io/open-webui/open-webui:v0.11.1` 为固定基线。Open WebUI 默认发布到
 宿主端口 `3000`，数据保存在命名卷 `open-webui-data`。它将
@@ -199,8 +207,8 @@ DEFAULT_MODELS: codex-terra
 启用 `AGENT_WORKSPACE_ENABLED` 和 `SANDBOX_MANAGER_STORAGE_ENABLED` 后，同源 BFF 为对话创建
 Workspace；当前消息附件必须在本轮 Agent 任务提交前完成批次 checkout。
 `POST /api/agent/artifacts/publish` 显式发布当前 Turn 输出目录中的指定普通文件，完整上传后才
-附加助手消息并返回 Open WebUI 鉴权下载链接。RustFS 连接、Files 凭证和 Workspace STS 父凭证
-见 `.env.example`；`run-stack.sh` 首次启动时生成独立 restic repository password，后续启动复用。
+附加助手消息并返回 Open WebUI 鉴权下载链接。RustFS 连接、Artifact 凭证和 Workspace STS
+父凭证见 `.env.example`；`run-stack.sh` 首次启动时生成独立 restic repository password，后续复用。
 本地已有 rclone 业务凭证时，`scripts/configure-rustfs.py --remote rustfs` 将其导入 `.env` 并使用
 `static` 模式；生产环境默认使用支持 `AssumeRole` 的 `sts` 模式。
 
@@ -217,7 +225,8 @@ bash scripts/run-stack.sh
 ```
 
 该参考部署提供标准 Responses 聊天入口。MCP Apps 部署将 `frontend/mcp-apps-host` 接入
-Open WebUI 消息渲染，并由同源 BFF 代理 Adapter 的 `/v1/mcp-apps/*` 接口。
+Open WebUI 消息渲染，并由同源 BFF 代理 Adapter 的 `/v1/mcp-apps/*` 接口；MCP Host 只向 App
+转交短期 Artifact HTTP capability，不增加第二套文件工具协议。
 
 默认复用 `$CODEX_HOME/auth.json`（未设置时为 `$HOME/.codex/auth.json`）。脚本将认证副本放入
 忽略版本控制且权限为 `0700` 的 Secret 根目录，再只读注入 Worker；不会把认证写入镜像。
@@ -227,7 +236,7 @@ Open WebUI、Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或�
 Adapter/DNS/代理/内部服务变化后，必须再次执行 `run-stack.sh`；脚本重建 Manager 和
 Adapter、清理现有 Worker 及实例级临时 Workspace、原子恢复策略，失败时保持 Open WebUI、
 Gateway 和 Adapter 停止。部署操作会结束活动 Sandbox，但必须保留 Manager 状态卷和可恢复
-Workspace，并由 Manager 重启后对账。
+Workspace；Artifact 对象不参与 Worker 清理。
 
 ## 验收
 
@@ -241,7 +250,11 @@ Workspace，并由 Manager 重启后对账。
   Sandbox 前被拒绝。
 - 每个公共模型 ID 均路由到对应 Agent Runtime 模型，对外 Response 保持公共 ID。
 - 缺少授权、过期、重放或绑定到其他 Sandbox/Workspace 的文件操作全部 fail closed。
-- Worker 无法访问 Files 或对象存储；一次性任务最多访问一个 Workspace 和当前操作端点。
+- Worker 无法访问 Artifact Service 或对象存储；一次性任务最多访问一个 Workspace 和当前操作端点。
+- Artifact upload 在大小/摘要校验和 manifest 提交前不可查询或下载；无权限、跨用户、跨 App
+  和越权 capability 全部拒绝，未完成对象由 bucket lifecycle 延迟回收。
+- 外部 MCP App 可用短期目标读写获准 Artifact，但不能声明用户、绑定消息、访问 Workspace 或
+  获取对象存储凭证。
 - Agent 默认在 `work` 运行，不能修改 checkout 输入；publish 拒绝 `work`、`uploads`、其他
   Turn 输出、符号链接和非普通文件。
 - 当前消息的全部附件原子可见；checkout 失败时 Agent Turn 不启动，崩溃重试不暴露 staging。
@@ -264,3 +277,6 @@ bash scripts/run-basic-smoke.sh
 第一项同时验证代理白名单、Adapter→Worker DNS/TCP 方向性，以及 Worker 无法访问 Adapter、
 Manager、Gateway、宿主网桥和运行时解析得到的公网 IP。第二项经 Gateway、Adapter 和真实
 Worker 要求 Agent 在工作区执行随机 nonce 的 shell 摘要命令，并校验返回值。
+
+Storage smoke 还必须覆盖浏览器上传/下载、MCP upload/download、批次 checkout、快照 publish、
+跨主体拒绝、幂等重试以及 Artifact Service 或对象存储故障后的对账恢复。

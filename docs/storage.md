@@ -1,40 +1,69 @@
 # 文件与 Workspace 存储
 
-本设计只解决两类数据：对话中的用户文件与生成物，以及 Sandbox Workspace 的可恢复性。
-不新增通用存储产品或文件系统服务。
+本设计解决三类需求：对话中的用户文件与生成物、外部 MCP App 的受控 Artifact 交换，以及
+Sandbox Workspace 的可恢复性。Artifact 是不可变对象，不扩展为远程 Workspace 文件系统。
 
 ## 存储分工
 
 | 数据 | 权威存储 | 访问入口 |
 |---|---|---|
-| 用户、对话、笔记、ACL、文件元数据 | Open WebUI 数据库 | Open WebUI |
-| 用户上传与已发布生成物 | Open WebUI Files + 私有对象存储 | Open WebUI/BFF 鉴权链接 |
+| 用户、对话、笔记和业务 ACL | Open WebUI 数据库 | Open WebUI |
+| Artifact 内容与不可变 manifest | 私有对象存储 | Artifact API；BFF/MCP capability |
+| 消息绑定与业务引用 | Open WebUI 或调用方数据库 | 对应业务服务 |
 | 活动 Workspace | 本地 POSIX 卷 | 对应 Worker；受控一次性任务 |
 | Workspace revision | 对象存储中的 restic 仓库 | Manager 编排的一次性任务 |
 | Workspace/operation 状态 | Manager 持久数据库 | Manager 控制接口 |
 
-Open WebUI 配置 S3 只改变其文件对象后端，不会把笔记或对话正文迁移到 S3。对象存储无需让
-浏览器或 Sandbox 直接访问；它可以仅在内网提供服务。其他系统可用独立 bucket/prefix 和凭证
-复用该对象存储，但各自维护业务 ACL。
+将 Artifact 内容配置到 S3 不会把 Open WebUI 的笔记或对话正文迁入对象存储。对象存储无需让
+浏览器、MCP App 或 Sandbox 直接访问；它可以仅在内网提供服务。外部调用方通过带 TLS 的
+Artifact Service/BFF 访问文件，不取得 S3 AK/SK。
 
-生产部署中，Open WebUI 文件对象与 Workspace restic 仓库使用不同的 bucket/prefix 和服务
-凭证；restic repository password 作为第三个独立 Secret 保存。Open WebUI 独占 Files 凭证；
-Manager 的专用 Workspace 父凭证只用于调用 RustFS STS。每个 Workspace 使用独立 restic
-repository prefix，一次性任务只收到该 prefix 的临时会话凭证，不共享跨 Workspace 去重。
+生产部署中，Artifact 内容与 Workspace restic 仓库使用不同的 bucket/prefix 和服务凭证；
+restic repository password 作为第三个独立 Secret 保存。Artifact Service 凭证只访问 Artifact
+前缀；Manager 的 Workspace 父凭证只用于调用 RustFS STS。每个 Workspace 使用独立 restic
+repository prefix，一次性快照任务只收到该 prefix 的临时会话凭证，不共享跨 Workspace 去重。
 
 本地验收可由 `configure-rustfs.py` 导入现有 rclone 业务 AK/SK，并显式使用 `static` 模式；
-凭证只进入 Manager 创建的受信任一次性任务，任务结束即删除，Worker 不可见。生产环境使用
-可调用 `AssumeRole` 的独立 IAM 凭证和默认 `sts` 模式。
+Artifact Service 与 Manager 使用独立、按前缀限制的业务凭证，Worker 不可见。生产环境使用
+独立 IAM 身份；Workspace 一次性任务默认使用 `sts` 模式。
 
-文件后端只向上层提供上传会话、上传完成、元数据查询和短期下载源；本地 `Path` 的 materialize
-与 publish 不属于该接口，而是 Manager 内部的 Workspace 文件桥接能力。当前文件后端是 Open
-WebUI Files，`storage-ops` 只消费单次传输 URL 和令牌；该边界允许以后替换后端，但本版不部署
-独立 Artifact Service。
+## Artifact Service
+
+Artifact Service 是唯一新增的常驻存储服务，但首版只是 RustFS 前的无状态薄网关：负责不可变
+Artifact 的上传、查询和下载，不另建元数据数据库、引用系统或传输 Worker。最小接口为：
+
+```text
+create_upload → UploadTarget
+complete_upload → ArtifactDescriptor
+inspect(artifact_id) → ArtifactDescriptor
+create_download(artifact_id) → DownloadTarget
+delete(artifact_id) → Deleted  # 仅受信任业务服务
+```
+
+上传先写随机、不可覆盖的内容键；完成时校验大小和摘要，最后写不可变 manifest 作为提交标记。
+`inspect` 和下载只接受已有 manifest 的对象，因此未完成上传不可见；残留内容由 bucket lifecycle
+延迟清理。manifest 只含 `artifact_id`、所有者、展示名、媒体类型、大小、摘要和创建时间；
+`artifact_id` 是不透明标识，不包含对象键，也不是凭证。
+
+Open WebUI/BFF 负责业务 ACL，并维护消息与 `artifact_id` 的绑定；Artifact Service 只验证可信
+服务身份或短期 capability。Artifact 所有者在自身引用解除并经过宽限期后，才用受信任接口删除
+对象；网关不推断跨系统引用，非所有者只能获得限时访问。外部 MCP App 的 capability 绑定
+调用方、`app_id`、Artifact、操作、大小和有效期。控制和文件流均使用 HTTPS；大文件流式传输，
+不落服务本地磁盘。
+首版不提供目录、搜索、版本树、跨 Artifact 事务、去重或断点续传。
+
+本地 `Path` 的 materialize/publish 不属于 Artifact API，而是 Manager 内部的 Workspace 文件
+桥接能力。`storage-ops` 只消费一次性 `UploadTarget` 或 `DownloadTarget`，不持有 Artifact Service
+或对象存储长期凭证。
+
+外部 MCP App 通过 MCP Host 取得同一 HTTP 接口的短期目标；无需为文件复制再定义一套 MCP
+工具协议，MCP 消息也不承载大文件字节。Host 注入调用方和 `app_id`，App 不能自行声明身份、
+对话绑定或扩大 Artifact 范围；消息附件绑定仍只能由 BFF 完成。
 
 ## 对话绑定
 
-同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces` 映射表。记录只保存
-`chat_id`、不透明 `workspace_id`、策略和时间戳；访问权每次从 Open WebUI 对话 ACL 重新判断。
+同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces` 和消息 Artifact 绑定。
+记录只保存业务对象与不透明 ID；访问权每次从 Open WebUI 对话 ACL 重新判断。
 
 - 对话首次执行 Agent 时，BFF 经 Adapter 请求 Manager 创建可恢复 Workspace，再保存映射；
 - 后续请求取得同一 `workspace_id` 并注入短期签名授权，Adapter 转交给 Manager；
@@ -42,8 +71,8 @@ WebUI Files，`storage-ops` 只消费单次传输 URL 和令牌；该边界允�
 - 克隆或分叉对话默认创建新的空 Workspace，不继承原 Workspace；
 - 删除对话时解除映射并请求停止活动租约，Workspace 按保留策略延迟删除。
 
-BFF 以 Open WebUI v0.11.1 派生镜像中的薄路由实现，直接复用其用户认证、Chats、Files 和
-Storage，不部署独立公共服务，也不复制 Open WebUI 的文件元数据或 ACL。
+BFF 以 Open WebUI v0.11.1 派生镜像中的薄路由实现，复用其用户认证、Chats 和消息附件展示；
+数据库只保存业务绑定和展示所需描述符，不保存文件内容或对象键。
 
 ## Workspace 目录约定
 
@@ -63,22 +92,21 @@ Storage，不部署独立公共服务，也不复制 Open WebUI 的文件元数�
 ## 用户上传与下载
 
 ```text
-上传：Browser → Open WebUI auth/ACL → Files API ─┬→ Open WebUI DB（元数据）
-                                                  └→ object storage（内容）
+上传：Browser → Open WebUI auth/ACL → Artifact upload → object storage
+                                      └→ message ↔ artifact_id binding
 
-下载：stable link → Open WebUI auth/ACL → Files API → object storage → Browser
+下载：stable BFF link → Open WebUI auth/ACL → short ticket → Artifact Service → Browser
 ```
 
-Open WebUI 把上传结果作为文件附件绑定到对话消息，并返回稳定 `file_id` 或应用链接；每次下载
-都重新校验用户与对话权限。默认不向浏览器返回对象存储长期凭证或永久公开 URL；需要大文件
-卸载时，只能在鉴权后签发短期、单对象 URL。
+Open WebUI 把上传完成后返回的 `artifact_id` 绑定到对话消息，并显示稳定应用链接；每次下载都
+重新校验用户与对话权限，再签发短期、单对象票据。对象存储保持私有。
 
 ## 文件进入 Sandbox
 
-Sandbox 不能凭 `file_id` 直接读取文件。BFF 校验当前用户、对话和文件 ACL 后，签发绑定
-`sandbox_id`、`workspace_id`、`turn_id`、源文件集合、大小/摘要、有效期和 nonce 的单次 checkout
-授权。消息被接受后，Adapter 可以先创建 Sandbox，但必须等待 checkout 成功才提交本轮 Agent
-任务。
+Sandbox 不能凭 `artifact_id` 直接读取文件。BFF 校验当前用户、对话和 Artifact 绑定后，签发
+绑定 `sandbox_id`、`workspace_id`、`turn_id`、源 Artifact 集合、大小/摘要、有效期和 nonce 的
+单次 checkout 授权。消息被接受后，Adapter 可以先创建 Sandbox，但必须等待 checkout 成功才
+提交本轮 Agent 任务。
 
 Manager 启动一个 `artifact-checkout-*` 批次任务，将全部附件暂存到同一 Workspace 文件系统，
 逐个校验后原子提交为 `uploads/<turn_id>`。任一附件失败时整批不可见且本轮不执行；重试通过
@@ -89,11 +117,11 @@ Manager 启动一个 `artifact-checkout-*` 批次任务，将全部附件暂存�
 Agent 将生成物写入当前 `outputs/<turn_id>` 并关闭文件；用户或受信任上层随后调用
 `POST /api/agent/artifacts/publish`。系统不扫描目录，也不自动发布。BFF 只授权与目标助手消息
 绑定的 Turn 和精确路径，Manager 短暂停止写入并固化只读快照，随后由 `artifact-publish-*`
-从快照上传到 Open WebUI Files。
+从快照创建 Artifact。
 
-完整上传成功后，BFF 才把返回的 `file_id` 和稳定下载链接附加到对应助手消息。失败或结果不明
-时不暴露不完整文件；未绑定对象延迟回收，幂等重试不能产生重复附件。发布对象具有独立生命
-周期，即使 Sandbox 销毁或 Workspace 本地卷被清理，链接仍可按 ACL 下载。
+完整上传成功后，BFF 才把返回的 `artifact_id` 和稳定下载链接附加到对应助手消息。失败或结果
+不明时不暴露不完整文件；未提交内容由对象存储生命周期回收，幂等重试不能产生重复附件。发布
+对象具有独立生命周期，即使 Sandbox 销毁或 Workspace 本地卷被清理，链接仍可按 ACL 下载。
 
 ## Workspace 持久化
 
@@ -109,7 +137,6 @@ checkpoint 失败或结果不明时保留 dirty 本地卷，绝不删除唯一�
 对话解除引用后，Manager 先标记延迟删除；宽限期到期且无活动租约或操作时，再删除该
 Workspace 的本地卷、repository prefix 和控制记录。
 
-存储实现复用 Open WebUI Files、兼容 S3 的私有对象存储和 restic。checkout/publish 由 Manager
-编排同一个 `storage-ops` 一次性任务镜像；它不是常驻服务，也不构建通用文件 API。外部 MCP
-App 的 AppSession 或 `file_id` 不授予 Workspace、Files 或对象存储访问权；独立通用 Artifact
-Service 不属于本设计。
+存储实现复用兼容 S3 的私有对象存储、restic 和标准 HTTP 流式传输。checkout/publish 由 Manager
+编排同一个 `storage-ops` 一次性任务镜像；它不是常驻服务。外部 MCP App 直接使用受限 Artifact
+接口，不选择 `workspace_path`；只有文件进出 Sandbox 时才经过 Manager Bridge。

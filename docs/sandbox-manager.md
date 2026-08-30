@@ -111,25 +111,25 @@ checkpoint 前对账清理。
 
 ### 操作授权
 
-Open WebUI/BFF 先校验当前用户、会话、对话和文件权限，再签发短期、单次使用的操作授权。
+Open WebUI/BFF 先校验当前用户、会话、对话和 Artifact 权限，再签发短期、单次使用的操作授权。
 BFF 可以是 Open WebUI 的同源后端扩展，不要求新增独立公共服务。授权至少绑定：
 
 ```text
 issuer + audience + operation + sandbox_id + workspace_id
-+ turn_id + file_id/source 或 workspace_path
++ turn_id + artifact_id/source 或 workspace_path
 + destination/用途 + max_bytes/摘要 + expires_at + nonce
 ```
 
 Manager 校验签名、有效期、单次 nonce、Sandbox/Workspace 归属和当前租约，并持久记录消费结果。
-因此猜到或篡改 `file_id` 不能扩大访问范围；Adapter 也不能只凭 `file_id` 请求文件。
+因此猜到或篡改 `artifact_id` 不能扩大访问范围；Adapter 也不能只凭 `artifact_id` 请求文件。
 
 授权使用独立密钥的 HMAC-SHA256 紧凑令牌；Adapter 只能转交令牌，不持有签名密钥。Manager 在
-创建操作时原子消费 nonce，并为一次性任务生成仅限该 `operation_id` 的短期传输凭证。
+创建操作时原子消费 nonce；一次性任务只收到绑定该 `operation_id` 的短期传输目标。
 
-checkout/publish 任务使用 BFF 验证的单次 Files 传输令牌。checkpoint/restore 任务使用
-Manager 通过 RustFS STS 签发的临时 S3 会话凭证；会话策略同时限制当前 Workspace
-repository prefix、必需动作和任务时间。父凭证只注入 Manager，不注入一次性任务或
-Worker；不使用 RustFS root 凭证。
+checkout/publish 任务使用 Artifact Service 签发的短期、单对象上传或下载票据。
+checkpoint/restore 任务使用 Manager 通过 RustFS STS 签发的临时 S3 会话凭证；会话策略同时
+限制当前 Workspace repository prefix、必需动作和任务时间。父凭证只注入 Manager，不注入
+一次性任务或 Worker；不使用 RustFS root 凭证。
 
 ### checkout：文件进入 Workspace
 
@@ -151,9 +151,10 @@ publish 不监听目录，只能由已认证的上层请求显式触发，且生
    Sandbox 和 Workspace 仍匹配，并取得排他的文件操作锁。
 2. Manager 短暂停止该 Workspace 的写入；一次性任务安全打开普通文件，复制为 Manager 管理的
    只读快照并计算摘要，然后恢复写入。网络上传只读取快照。
-3. `artifact-publish-*` 使用单次授权上传到 Open WebUI Files。完整上传成功后，Open WebUI 才
-   写入所有者和文件元数据、附加助手消息，并返回 `file_id` 与稳定下载链接。
-4. 上传或消息绑定失败时不暴露不完整链接；未绑定对象延迟回收，相同幂等键复用已完成结果。
+3. `artifact-publish-*` 使用单次上传目标创建 Artifact；大小和摘要校验完成后 Artifact Service
+   写入不可变 manifest 并返回 `artifact_id`。
+4. BFF 只把已提交 manifest 的 Artifact 附加到助手消息并生成稳定下载链接。上传或绑定失败时
+   不暴露不完整链接；相同幂等键复用已完成结果，确认放弃后由 BFF 延迟请求删除未绑定 Artifact。
    已成功发布的对象不随 Sandbox 或 Workspace 清理删除。
 
 ## 操作执行、恢复与监控
@@ -173,8 +174,8 @@ Manager 为每次操作持久化 `pending/running/succeeded/failed`、幂等键�
 
 ## 明确不负责
 
-- 用户、租户、对话和 `file_id` 的业务 ACL；
+- 用户、租户、对话和 `artifact_id` 的业务 ACL；
 - Responses、Agent RPC/SSE、MCP Apps 数据面；
-- 文件内容代理、通用对象存储 API 或浏览器下载服务；
-- Workspace 目录监听、自动发布或独立通用 Artifact Service；
+- Artifact 元数据、文件内容代理或浏览器下载服务；
+- Workspace 目录监听或自动发布；
 - 向 Sandbox 提供对象存储、Open WebUI 或运行平台凭证。

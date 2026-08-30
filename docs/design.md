@@ -24,26 +24,27 @@ Open WebUI / 同源 BFF（Backend for Frontend）
   │                                              ├── Workspace lifecycle
   │                                              └── one-shot operation (runc)
   │                                                    ├── one Workspace volume
-  │                                                    └── Files / snapshot repository
-  └── Files API → private object storage
+  │                                                    └── Artifact API / snapshot repository
+  └── Artifact upload/download → Artifact Service → private object storage
 ```
 
-控制面与数据面分离：Adapter 直接连接 Worker；文件传输和 Workspace 快照由 Manager
-启动的可信一次性任务完成。Sandbox 不接收 Open WebUI、对象存储、Manager 或运行平台凭证。
+控制面与数据面分离：Adapter 直接连接 Worker；用户和 MCP 文件流由 Artifact Service 处理，
+文件进出 Workspace 及快照由 Manager 启动的可信一次性任务完成。Sandbox 不接收 Artifact、
+对象存储、Manager 或运行平台凭证。
 
 ## 职责
 
 | 模块 | 职责 |
 |---|---|
-| Open WebUI / BFF | 用户认证、会话与文件访问控制；模型选择；上传、下载和生成物发布入口 |
+| Open WebUI / BFF | 用户认证、会话与文件 ACL；模型选择；Artifact 与消息绑定及稳定下载入口 |
 | LiteLLM | Responses 入口、模型目录与路由、部署认证和治理 |
 | Adapter | Responses 请求与事件映射、Worker RPC/SSE；调用 Manager 并转交 BFF 文件操作授权 |
 | Sandbox Manager | Sandbox 生命周期、Workspace 生命周期、受控文件操作编排和操作状态恢复 |
 | Sandbox Worker | 托管 Agent Runtime，只访问挂载给自己的 Workspace 和获准网络接口 |
 | 一次性任务 | 在最小挂载和短期凭证下执行 checkout、publish、checkpoint、restore 或 retire |
-| Open WebUI Files | 管理上传文件与已发布生成物，提供稳定 `file_id` 和授权下载入口 |
-| 对象存储 | 保存 Open WebUI 文件对象及 Workspace 快照；不同用途使用独立 bucket/prefix 与凭证 |
-| MCP Gateway | 独立提供和治理 MCP Server、Tool 与 App |
+| Artifact Service | 以不可变 manifest 提交 Artifact，签发短期目标并流式访问私有对象存储 |
+| 对象存储 | 保存 Artifact 内容及 Workspace 快照；不同用途使用独立 bucket/prefix 与凭证 |
+| MCP Gateway | 独立提供和治理 MCP Server、Tool 与 App；转交精确 Artifact capability |
 
 ## Sandbox Manager 能力
 
@@ -69,7 +70,7 @@ Manager 的能力按接口和权限分为三组，但保持为一个控制面服
 ### 受控文件操作
 
 - 接收 BFF 已完成业务授权的操作授权，校验操作、`sandbox_id`、`workspace_id`、`turn_id`、
-  精确对象或路径、大小、有效期和单次 nonce 的绑定；
+  精确 `artifact_id` 或路径、大小、有效期和单次 nonce 的绑定；
 - 可信控制面分配 `/workspace/uploads/<turn_id>`、`work` 和 `outputs/<turn_id>`；Agent 默认在
   `work` 中运行，只有当前 Turn 的 `outputs` 文件可发布；
 - 当前消息被接受后，checkout 在本轮 Agent 任务提交前批量暂存、校验并原子提交；publish 只由
@@ -77,8 +78,8 @@ Manager 的能力按接口和权限分为三组，但保持为一个控制面服
 - 启动最多挂载一个 Workspace 的一次性可信任务，并持久记录操作状态、幂等键和提交结果，
   使重启后可以对账；不通过目录监听自动发布文件。
 
-Manager 不判断用户、会话或对话是否有权访问 `file_id`；这是 Open WebUI/BFF 的业务授权职责。
-`file_id` 本身不是凭证。Manager 也不转发文件字节、Agent RPC/SSE，且不向 Sandbox 下发
+Manager 不判断用户、会话或对话是否有权访问 `artifact_id`；这是 Open WebUI/BFF 的业务授权
+职责。`artifact_id` 本身不是凭证。Manager 也不转发文件字节、Agent RPC/SSE，且不向 Sandbox 下发
 对象存储或运行平台凭证。
 
 ## 模型选择
@@ -93,15 +94,16 @@ Adapter 将解析后的 Codex 模型传给 Agent Runtime；对外 Response 保�
 
 | 数据 | 权威存储 | 说明 |
 |---|---|---|
-| 用户、对话、笔记、权限、文件元数据 | Open WebUI 数据库 | 配置 S3 不会把笔记和对话改存为对象 |
-| 用户上传与已发布生成物 | Open WebUI Files + 私有对象存储 | 通过应用鉴权的稳定链接下载 |
+| 用户、对话、笔记和业务 ACL | Open WebUI 数据库 | 配置 S3 不会把笔记和对话改存为对象 |
+| Artifact 内容与不可变 manifest | 私有对象存储 | `artifact_id` 不包含存储位置或权限 |
+| 消息绑定与业务引用 | Open WebUI 或调用方数据库 | BFF 稳定链接或短期 capability 下载 |
 | 活动 Workspace | 本地 POSIX 卷 | 低延迟读写；仅挂载给对应 Worker 或一次性任务 |
 | Workspace revision | 对象存储中的 restic 仓库 | 后台增量 checkpoint 和按需 restore |
 | Workspace/operation 控制状态 | Manager 持久数据库 | 记录本地代次、远端 head、租约与操作状态 |
 
-对象存储无需由浏览器或 Sandbox 直接访问，可以只提供内网 HTTP；生产环境仍应在反向代理、
-服务网格或对象存储端启用 TLS。其他系统可使用自己的 bucket/prefix 和凭证接入同一对象存储，
-但不能复用 Open WebUI 的业务授权。
+对象存储无需由浏览器或 Sandbox 直接访问，现有环境可继续只提供隔离 `storage` 网络内的 HTTP。
+浏览器和外部 MCP App 只访问带 TLS 的 Artifact Service/BFF，不接收对象存储凭证；对象存储
+跨越不可信网络时才要求额外 TLS 或等价加密隧道。
 
 ## 对话与 Workspace 绑定
 
@@ -118,11 +120,12 @@ Open WebUI/BFF 在受保护的映射表中维护 `chat_id → workspace_id`。�
 | 主体 | 必需权限 | 禁止权限 |
 |---|---|---|
 | Gateway | 调用 Adapter | 访问 Manager、Worker 或运行平台 |
-| Open WebUI / BFF | 校验用户/对话/文件权限；签发短期、单次操作授权 | 控制 Worker 或向 Sandbox 暴露存储凭证 |
+| Open WebUI / BFF | 校验用户/对话/Artifact 权限；维护消息绑定并签发短期操作授权 | 控制 Worker 或向 Sandbox 暴露存储凭证 |
+| Artifact Service | 校验短期 capability；访问 Artifact 对象前缀 | 判断业务 ACL；访问 Workspace 或运行平台 |
 | Adapter | 调用 Manager 控制接口；连接 Worker | 控制底层运行平台或自行授予文件权限 |
 | Sandbox Manager | 管理受管 Worker、Workspace 卷和一次性任务；验证操作授权 | 判断业务 ACL；代理 Agent 或文件数据面 |
 | 一次性任务 | 按需访问一个 Workspace 和一次操作所需端点 | 访问其他 Workspace、长期凭证或通用运行平台接口 |
-| Sandbox Worker | 访问自己的 Workspace、策略代理和明确允许的内部接口 | 访问 Files、对象存储、Adapter、Manager 或运行平台凭证 |
+| Sandbox Worker | 访问自己的 Workspace、策略代理和明确允许的内部接口 | 访问 Artifact Service、对象存储、Adapter、Manager 或运行平台凭证 |
 | egress-proxy | 访问允许的外部目标 | 接受非 Agent 网络来源或转发未授权目标 |
 
 各服务使用独立部署凭证。操作授权必须短期、单次使用并绑定操作范围；底层平台授权应限制在
@@ -134,13 +137,13 @@ Open WebUI/BFF 在受保护的映射表中维护 `chat_id → workspace_id`。�
 
 | 网络域 | 成员 | 约束 |
 |---|---|---|
-| control | Open WebUI、Gateway、Adapter、Manager、同源 BFF | 普通工作负载网络 |
+| control | Open WebUI、Gateway、Adapter、Manager、Artifact Service、同源 BFF | 普通工作负载网络 |
 | agent-rpc | Adapter、Worker | 仅允许 Adapter 向 Worker 发起 RPC/SSE 连接 |
 | agent-egress | Worker、DNS、egress-proxy、获准内部接口 | Worker 无默认互联网路由 |
-| storage | Open WebUI Files、对象存储、受控一次性任务 | Worker 不加入；按操作限制访问方向和端点 |
+| storage | Artifact Service、对象存储、受控一次性任务 | Worker 不加入；按操作限制访问方向和端点 |
 | egress-uplink | egress-proxy | 提供策略代理的外部出口 |
 
-必须允许 Adapter→Worker 的新连接及其返回流量，并拒绝 Worker→Adapter/Manager/Files/对象
+必须允许 Adapter→Worker 的新连接及其返回流量，并拒绝 Worker→Adapter/Manager/Artifact/对象
 存储的新连接。Agent 互联网访问默认拒绝，只允许经过 egress-proxy；MCP 或本地模型等内部
 接口也必须按服务身份和端口显式允许。所有内部调用使用 DNS 服务名，不在配置中固定 IP。
 
@@ -192,6 +195,9 @@ response_id + origin_call_id + app_id + server_id + resource_uri + allowed_tools
 浏览器中的 AppBridge 经 BFF 调用 Adapter，不直接访问内部模块。Response、AppSession 和
 MCP Apps side-event 保存在 Adapter 单进程内存中，不提供多实例恢复。AppSession 的保留不
 延长 Sandbox 租约；Sandbox 已回收时，后续资源或工具调用 fail closed。
+
+AppSession 不自动授予文件权限。外部 MCP App 只获得绑定用户、App、Artifact、操作、大小和
+期限的 capability；文件字节经 Artifact Service HTTPS 传输，不进入 MCP JSON 或 Agent RPC。
 
 ## 协议约束
 

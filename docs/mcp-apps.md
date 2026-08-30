@@ -35,9 +35,11 @@ response_id + origin_call_id + app_id + server_id + resource_uri + allowed_tools
 AppSession 在 Response 终态后保留，但不延长 Sandbox 租约。Sandbox 已回收时，资源和工具
 调用返回 `sandbox_unavailable`；删除 Response 或 Adapter 重启时清除 AppSession。
 
-AppSession 只授权已绑定的 MCP 资源和工具，不授予 Open WebUI `file_id`、Workspace 路径或
-对象存储权限。MCP App 自身生成的文件仍通过其工具结果或上层 BFF 处理；本设计不提供外部 App
-直连 Workspace 或通用 Artifact Service。
+AppSession 只授权已绑定的 MCP 资源和工具，不自动授予 Artifact、Workspace 或对象存储权限。
+需要文件时，MCP Host 另行注入绑定用户、`app_id`、`artifact_id`、操作和期限的 capability；App
+通过 Artifact Service 的短期 HTTPS 目标传输字节，不能直连 Workspace 或 S3，也不新增一套
+MCP 文件工具协议。App 生成的文件直接创建 Artifact，消息绑定仍由 BFF 完成，见
+[存储设计](storage.md)。
 
 ## 浏览器边界
 

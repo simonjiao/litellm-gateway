@@ -46,10 +46,10 @@ MCP Apps 的资源、interaction 和 side-event 是本项目扩展；`mcp_call` 
 
 ## 文件边界
 
-Responses 输入不解析 OpenAI file ID。Open WebUI `file_id` 的 checkout 和 Workspace 生成物
-publish 不属于 Responses 字段映射：Open WebUI/BFF 完成业务 ACL 后，通过独立、单次授权请求
-Manager 执行。Worker 只看到 Workspace 路径，`file_id` 本身不构成授权。上传、下载与发布流程
-见 [文件与 Workspace 存储](storage.md)。
+Responses 输入不解析 OpenAI file ID。`artifact_id` 的 checkout 和 Workspace 生成物 publish
+不属于 Responses 字段映射：Open WebUI/BFF 完成业务 ACL 后，通过独立、单次授权请求 Manager
+执行。Worker 只看到 Workspace 路径，`artifact_id` 本身不构成授权。上传、下载与发布流程见
+[文件与 Workspace 存储](storage.md)。
 
 当前消息附件按 `turn_id` 批量 checkout 到 `uploads/<turn_id>`；Adapter 必须等待提交成功后才
 启动该 Turn。publish 不是 Response 自动输出：已认证上层只能发布与目标助手消息绑定的
