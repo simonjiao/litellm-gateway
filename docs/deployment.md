@@ -23,7 +23,7 @@
 | Artifact Service | `runc` | control、storage | 短期数据入口和 Artifact 对象前缀 |
 | LiteLLM Gateway | `runc` | control | 无 |
 | Responses Adapter | `runc` | control、agent-rpc | 无 |
-| Sandbox Manager | `runc` | control、storage | 单实例；SQLite 状态卷；受管 Worker、Workspace 卷和一次性任务权限 |
+| Sandbox Manager | `runc` | control、storage | 单实例；SQLite 状态卷与 publish 暂存卷；受管资源权限 |
 | Sandbox Worker | `runsc` | agent-rpc、agent-egress | 独立工作区与 Runtime Secret |
 | 受控一次性任务 | `runc` | storage | 单 Workspace 挂载、操作暂存空间与单次授权 |
 | agent-dns | `runc` | agent-egress | 无 |
@@ -102,7 +102,7 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
 - Manager 的 RustFS 父凭证仅限 Workspace repository 范围，用 STS 为单次任务签发
   15–60 分钟的 prefix/action 限定会话；任务不持有父凭证。
 - Agent Runtime 认证与配置以只读 Secret 注入 Worker；Workspace 与 Runtime 状态目录分离。
-- Workspace 顶层和 `uploads` 由可信身份管理；Worker 只写 `work` 和当前助手消息的输出目录。
+- Workspace 顶层和 `uploads` 由可信身份管理；只有当前助手消息的输出可进入 publish。
 - 底层平台接口权限过大时，Manager 应运行在专用节点或等价隔离域。
 
 ## Sandbox Worker 基线
@@ -136,9 +136,9 @@ MCP App 交互续租；终态 Response 不保持无限租约。Sandbox 过期后
 
 环境映射只说明满足接口要求的方式，不改变上面的权限和网络不变量。
 
-租约与最长执行时间、单 Workspace 容量与文件数、并发操作数、checkpoint 超时、
-本地卷保留期、远端 revision 保留期和对话删除宽限期均为部署参数，不写死在业务
-逻辑中。超限操作在创建任务前拒绝。
+租约与最长执行时间、单 Workspace 容量与文件数、并发操作数、checkpoint 超时、publish 暂存
+容量与保留期、重试间隔与次数、本地卷保留期、远端 revision 保留期和对话删除宽限期均为部署
+参数，不写死在业务逻辑中。超限操作在创建任务前拒绝。
 
 ## 实现方案与规模
 
@@ -157,15 +157,17 @@ Open WebUI 路由、restic 操作和授权基础：
 | 分类 | 实现内容 | 生产代码 | 测试代码 |
 |---|---|---:|---:|
 | Artifact 薄网关 | manifest、流式上传下载、摘要和短期 capability | 250–400 行 | 200–350 行 |
-| BFF 与 MCP 接入 | 消息绑定、候选/稳定链接、App capability 转交 | 180–300 行 | 160–280 行 |
-| Workspace Bridge | 消息目录、批次 checkout、输出封存、publish 快照和崩溃对账 | 250–450 行 | 250–400 行 |
+| BFF 与 MCP 接入 | 用户上传下载、消息绑定和 App capability 转交 | 140–240 行 | 140–240 行 |
+| Workspace Bridge | 消息目录和批次原子 checkout | 180–300 行 | 200–320 行 |
+| 主动 publish | 候选捕获、intent、事件/点击触发、周期对账和失败恢复 | 570–820 行 | 650–910 行 |
 | 部署与 smoke | 镜像、配置、网络规则和端到端验收 | 100–180 行 | 100–180 行 |
-| 合计 | — | 780–1,330 行 | 710–1,210 行 |
+| 合计 | — | 1,240–1,940 行 | 1,290–2,000 行 |
 
-预计剩余增量合计约 1,490–2,540 行，其中生产逻辑少于 1,400 行。首版不引入 Temporal；现有
+主动 publish 本身预计约 700 行生产代码和 800 行测试代码；不含 Artifact Service。预计全部剩余
+增量约 2,530–3,940 行。首版不引入 Temporal；现有
 Manager SQLite 状态机已经覆盖当前小时级任务，Temporal 会新增服务、持久化和 Worker 编排，
 但不会替代路径隔离、原子目录提交、S3 传输或 Docker 对账。实施顺序为 Artifact 薄网关、
-BFF/MCP 复用接入、原子 Workspace Bridge 和端到端验收。
+批次 checkout、主动 publish、MCP 复用接入和端到端验收。
 
 ## Docker 参考部署
 
@@ -206,9 +208,9 @@ DEFAULT_MODELS: codex-terra
 
 启用 `AGENT_WORKSPACE_ENABLED` 和 `SANDBOX_MANAGER_STORAGE_ENABLED` 后，同源 BFF 为对话创建
 Workspace；用户消息附件必须在 Agent 执行前批量 checkout 到其消息目录，当前助手消息的输出
-目录由可信控制面注入。Open WebUI 把 Agent 返回的 `sandbox:` URI 显示为发布操作；用户点击后，
-前端以 `chat_id`、`assistant_message_id`、`response_id` 和相对路径调用
-`POST /api/agent/artifacts/publish`。完整上传后才附加助手消息并返回 Open WebUI 鉴权下载链接。
+目录由可信控制面注入。BFF 在终态 Response 中为明确的 `sandbox:` URI 创建 publish intent 并
+立即处理；用户点击未就绪候选时推进同一操作，周期任务补偿到期记录。完整上传并绑定消息后才
+返回 Open WebUI 鉴权下载链接。
 RustFS 连接、Open WebUI S3 凭证和 Workspace STS 父凭证见 `.env.example`；Artifact Service
 使用独立、仅限 Artifact prefix 的部署凭证。`run-stack.sh` 首次启动时生成独立 restic
 repository password，后续复用。
@@ -261,11 +263,12 @@ Workspace；Artifact 对象不参与 Worker 清理。
 - Agent 默认在 `work` 运行，不能修改 checkout 输入；publish 拒绝 `work`、`uploads`、其他
   助手消息的输出、符号链接和非普通文件。
 - 同一用户消息的全部附件原子可见；checkout 失败时 Agent 不启动，崩溃重试不暴露 staging。
-- Adapter 在终态 Response 前封存当前助手消息的输出目录；旧输出目录对 Agent 保持只读。
 - BFF 拒绝跨对话消息 ID、错误的助手消息与 Response 绑定，以及指向非当前输出目录的
-  `sandbox:` 候选链接；候选链接未经用户点击和 publish 成功不能下载。
-- publish 使用写入停止后固化的只读快照；上传未完成或消息绑定失败时不返回可下载附件，
-  相同幂等键不产生重复对象或附件。
+  `sandbox:` 候选链接；不扫描 Workspace 目录或发布未声明文件。
+- 终态事件创建 publish intent；候选捕获完成前同一 Workspace 不启动下一 Turn，但不暂停整个
+  Workspace。上传未完成或消息绑定失败时不返回可下载附件。
+- 事件、用户点击、周期对账和 BFF 重启恢复复用同一幂等操作；临时上传失败可从稳定副本恢复，
+  Artifact 已提交后的绑定失败不重新上传，相同幂等键不产生重复对象或附件。
 - checkpoint 成功并提交 revision 后才能延迟删除本地卷；失败时保留 dirty 本地卷。
 - restore 在新空卷中完成校验后才启动 Worker，恢复内容与指定 revision 一致。
 - 已发布生成物在 Sandbox/Workspace 清理后仍可经 Open WebUI ACL 链接下载。
@@ -284,5 +287,5 @@ bash scripts/run-basic-smoke.sh
 Manager、Gateway、宿主网桥和运行时解析得到的公网 IP。第二项经 Gateway、Adapter 和真实
 Worker 要求 Agent 在工作区执行随机 nonce 的 shell 摘要命令，并校验返回值。
 
-Storage smoke 还必须覆盖浏览器上传/下载、MCP upload/download、批次 checkout、快照 publish、
-跨主体拒绝、幂等重试以及 Artifact Service 或对象存储故障后的对账恢复。
+Storage smoke 还必须覆盖浏览器上传/下载、MCP upload/download、批次 checkout、事件/点击触发、
+周期对账、跨主体拒绝、幂等重试以及 Artifact Service 或对象存储故障后的恢复。

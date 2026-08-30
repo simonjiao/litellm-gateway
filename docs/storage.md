@@ -9,8 +9,9 @@ Sandbox Workspace 的可恢复性。Artifact 是不可变对象，不扩展为�
 |---|---|---|
 | 用户、对话、笔记和业务 ACL | Open WebUI 数据库 | Open WebUI |
 | Artifact 内容与不可变 manifest | 私有对象存储 | Artifact API；BFF/MCP capability |
-| 消息绑定与业务引用 | Open WebUI 或调用方数据库 | 对应业务服务 |
+| 消息绑定、publish intent 与业务引用 | Open WebUI 或调用方数据库 | 对应业务服务 |
 | 活动 Workspace | 本地 POSIX 卷 | 对应 Worker；受控一次性任务 |
+| 待发布候选副本 | Manager 本地持久卷 | 受控一次性任务；Worker 不挂载 |
 | Workspace revision | 对象存储中的 restic 仓库 | Manager 编排的一次性任务 |
 | Workspace/operation 状态 | Manager 持久数据库 | Manager 控制接口 |
 
@@ -62,8 +63,8 @@ Open WebUI/BFF 负责业务 ACL，并维护消息与 `artifact_id` 的绑定；A
 
 ## 对话绑定
 
-同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces` 和消息 Artifact 绑定。
-记录只保存业务对象与不透明 ID；访问权每次从 Open WebUI 对话 ACL 重新判断。
+同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces`、publish intent 和消息
+Artifact 绑定。记录只保存业务控制信息与不透明 ID；访问权每次从 Open WebUI 对话 ACL 重新判断。
 
 - 对话首次执行 Agent 时，BFF 经 Adapter 请求 Manager 创建可恢复 Workspace，再保存映射；
 - 后续请求取得同一 `workspace_id` 并注入短期签名授权，Adapter 转交给 Manager；
@@ -88,10 +89,9 @@ Open WebUI 在调用 Responses 前建立并持久化用户消息和助手占位�
 
 BFF 验证用户消息和助手消息属于同一对话链，并在助手消息的服务端 metadata 中保存
 `response_id`。可信控制面只把完整输入、输出路径注入当前 Agent 执行。挂载或文件权限强制输入
-只读、仅当前输出目录可写；Adapter 在执行终态以幂等同步调用请求 Manager 封存输出目录。
-封存只关闭该消息的写入窗口，publish 才固化只读字节快照。
-目录名称不替代授权，写入 `outputs` 也不会自动发布。checkpoint 保存整个 `/workspace`，不保存
-`/tmp`；同卷的 Manager 私有 staging 在 checkpoint 前清理或排除。
+只读；当前消息的发布范围由授权和安全路径解析强制。目录名称不替代授权，写入 `outputs` 也
+不会自动成为 Artifact。checkpoint 保存整个 `/workspace`，不保存 `/tmp`；Manager 的候选暂存区
+不挂载给 Worker，也不进入 checkpoint。
 
 ## 用户上传与下载
 
@@ -121,17 +121,25 @@ Manager 启动一个 `artifact-checkout-*` 批次任务，将全部附件暂存�
 
 Agent 将生成物写入当前 `outputs/<assistant_message_id>`，并在回复中使用
 `sandbox:/workspace/outputs/<assistant_message_id>/<relative_path>` 表示候选文件。该 URI 不是下载
-凭证；Open WebUI 将其呈现为发布操作而不是直接访问 Workspace。Response 终态且输出目录封存
-成功后操作才可点击；前端向 `POST /api/agent/artifacts/publish` 提交 `chat_id`、
-`assistant_message_id`、`response_id` 和相对路径。系统不扫描目录，也不自动发布。
+凭证。BFF 在终态 Response 中只识别这些明确候选，校验用户、对话、
+`assistant_message_id → response_id` 和相对路径后，按候选事务性创建唯一发布记录
+（publish intent）并立即驱动 Manager；不扫描 Workspace 目录。
 
-BFF 重新校验用户权限、消息与 Response 绑定和精确路径，再签发 publish 授权。Manager 只接受
-当前助手消息输出目录中的普通文件，短暂停止写入并固化只读快照，随后由
-`artifact-publish-*` 从快照创建 Artifact。
+Manager 安全打开当前消息目录中的普通文件，复制到 Worker 不可见的本地暂存区，校验文件在
+复制期间未变化，并以摘要和原子 manifest 提交稳定副本。该暂存区持久化且不进入 Workspace。
+BFF 只阻塞该 Workspace 的下一 Turn 到 Manager 报告捕获完成或失败；不暂停整个 Workspace。
+捕获失败时该候选失败，捕获成功后上传可在后台重试。每次上传尝试单独取得新的短期
+`UploadTarget`，Artifact Service 暂时不可用不影响已经提交的本地稳定副本。
 
-完整上传成功后，BFF 才把返回的 `artifact_id` 和稳定下载链接附加到对应助手消息。失败或结果
-不明时不暴露不完整文件；未提交内容由对象存储生命周期回收，幂等重试不能产生重复附件。发布
-对象具有独立生命周期，即使 Sandbox 销毁或 Workspace 本地卷被清理，链接仍可按 ACL 下载。
+publish intent 持久化 `pending/captured/uploading/uploaded/ready`、`operation_id`、尝试次数和下次
+重试时间；临时上传失败进入 `retryable`，Artifact 已提交但消息绑定失败进入 `binding_retry`，
+路径非法、文件缺失、变化或超限进入 `failed`。相同幂等键始终复用原操作和 Artifact。
+
+事件触发是主路径；用户点击未就绪候选时立即推进同一 intent，BFF 周期任务只扫描到期的 intent
+记录进行补偿。重试重新校验消息绑定并签发新 nonce 的短期授权，但保持原幂等键，不依赖在线
+用户会话。只有 `ready` 返回鉴权下载，其他状态不暴露对象地址。稳定副本保留到 Artifact manifest
+提交；未完成对象和放弃的未绑定 Artifact 分别由生命周期规则和宽限期清理。已绑定 Artifact
+不随 Sandbox 或 Workspace 清理删除。
 
 ## Workspace 持久化
 

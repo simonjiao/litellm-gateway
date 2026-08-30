@@ -28,7 +28,7 @@ Sandbox 和对应消息目录。
 |---|---|
 | Workspace | 创建、查询、checkpoint、restore 和解除引用；用户触发的请求要求 BFF 授权 |
 | Sandbox | 创建、查询、续租和销毁；创建时挂载一个可恢复 Workspace 或新建临时 Workspace |
-| 文件操作 | checkout 和 publish 返回可查询的 `operation_id`；输出封存是幂等同步调用；均不承载文件内容 |
+| 文件操作 | checkout 和 publish 返回可查询的 `operation_id`，不承载文件内容 |
 | 操作查询 | 返回状态和结果；相同幂等键复用已有操作 |
 
 浏览器不直接调用这些接口。Open WebUI/BFF 完成业务授权后调用 Adapter，Adapter 只转交签名
@@ -99,16 +99,15 @@ Manager 只接受 BFF 签名授权中符合 `[A-Za-z0-9_-]{1,128}` 的消息 ID�
 |---|---|---|
 | `/workspace/uploads/<user_message_id>` | 一次性任务 | 该用户消息的附件；Agent 只读 |
 | `/workspace/work` | Agent | 项目文件和持久中间结果；默认工作目录 |
-| `/workspace/outputs/<assistant_message_id>` | Agent | 该助手消息的可发布生成物；执行结束后封存 |
+| `/workspace/outputs/<assistant_message_id>` | Agent | 该助手消息声明的可发布生成物 |
 | `/tmp` | Agent | 不进入 checkpoint 的临时文件 |
 
-目录归属和只读属性由挂载或文件权限强制，提示词只说明用法。Workspace 顶层由 Manager 管理；
+上传目录的归属和只读属性由挂载或文件权限强制，提示词只说明路径约定。Workspace 顶层由
+Manager 管理；
 checkout 不能选择其他目的目录，publish 不能读取 `work`、`uploads` 或其他助手消息的输出。所有
 外部路径都以受控目录文件描述符为根解析，拒绝绝对路径、`..`、符号链接和非普通文件。Manager
-准备目录，Adapter 向 Agent 注入完整输入和输出路径，并在发送终态 Response 前请求 Manager
-封存输出目录。封存只关闭该消息目录的逻辑写入窗口，使其不再用于后续 Agent 写入；它不复制
-文件或创建 Artifact 快照，publish 才在排他锁下固化字节快照。同卷的私有 staging 不向 Agent
-开放，并在 checkpoint 前对账清理。
+准备目录，Adapter 向 Agent 注入完整输入和输出路径。publish 的本地持久暂存区不挂载给 Worker，
+并由操作 manifest 和保留期限管理。
 
 ## 受控文件操作
 
@@ -126,8 +125,8 @@ publish：assistant_message_id + response_id + output_relative_path + max_bytes
 Manager 校验签名、有效期、单次 nonce、Sandbox/Workspace 归属和当前租约，并持久记录消费结果。
 因此猜到或篡改 `artifact_id` 不能扩大访问范围；Adapter 也不能只凭 `artifact_id` 请求文件。
 
-checkout 成功后，Manager 记录当前 Sandbox 的 `assistant_message_id`。执行终态的输出封存只接受
-Adapter 服务身份，并必须命中该记录；它不能切换消息目录或发布文件。
+publish 授权绑定 `assistant_message_id`，Manager 据此构造唯一允许的输出根目录；调用方不能另选
+其他消息目录。
 
 授权使用独立密钥的 HMAC-SHA256 紧凑令牌；Adapter 只能转交令牌，不持有签名密钥。Manager 在
 创建异步操作时原子消费 nonce；一次性任务只收到绑定该 `operation_id` 的短期传输目标。
@@ -152,18 +151,19 @@ checkpoint/restore 任务使用 Manager 通过 RustFS STS 签发的临时 S3 会
 
 ### publish：生成物离开 Workspace
 
-publish 不监听目录，也不因 Agent 写入文件自动触发：
+publish 只处理终态 Response 中明确的 `sandbox:` 候选，不监听或扫描目录：
 
-1. Agent 在回复中返回当前输出目录下的 `sandbox:` 候选链接；用户点击后，BFF 校验用户、对话、
-   `assistant_message_id → response_id` 绑定和精确相对路径，再签发 publish 授权。
-2. Manager 校验 Sandbox、Workspace 和助手消息目录仍匹配，并取得排他的文件操作锁。
-3. Manager 短暂停止该 Workspace 的写入；一次性任务安全打开普通文件，复制为 Manager 管理的
-   只读快照并计算摘要，然后恢复写入。网络上传只读取快照。
-4. `artifact-publish-*` 使用单次上传目标创建 Artifact；大小和摘要校验完成后 Artifact Service
-   写入不可变 manifest 并返回 `artifact_id`。
-5. BFF 只把已提交 manifest 的 Artifact 附加到助手消息并生成稳定下载链接。上传或绑定失败时
-   不暴露不完整链接；相同幂等键复用已完成结果，确认放弃后由 BFF 延迟请求删除未绑定 Artifact。
-   已成功发布的对象不随 Sandbox 或 Workspace 清理删除。
+1. BFF 校验用户、对话、`assistant_message_id → response_id` 和精确相对路径，事务性创建唯一
+   publish intent；每次驱动签发新 nonce 的短期授权，终态事件、用户点击和周期对账保持同一
+   幂等键。
+2. Manager 校验 Sandbox、Workspace 和消息目录并取得文件操作锁；BFF 在 Manager 报告捕获完成
+   或失败前不提交同一 Workspace 的下一 Turn。
+3. `artifact-publish-*` 以受控目录描述符打开普通文件，复制到 Worker 不可见的暂存区，计算摘要
+   并校验复制期间未变化；临时文件和 manifest 经 `fsync` 后原子提交。失败候选不得继续上传。
+4. 捕获完成即释放执行屏障；每次上传尝试取得新的单次目标，从稳定副本创建 Artifact。
+   Artifact Service 校验大小和摘要、提交不可变 manifest 并返回 `artifact_id`。
+5. BFF 将 Artifact 附加到助手消息后把 intent 标记为 ready。上传失败从稳定副本重试；绑定失败
+   只重试绑定；相同幂等键不重复上传或附加，放弃的未绑定 Artifact 经过宽限期后删除。
 
 ## 操作执行、恢复与监控
 
@@ -174,7 +174,10 @@ Worker。临时凭证仅在任务存活期内可用，任务终止后不持久�
 Manager 为每次异步操作持久化 `pending/running/succeeded/failed`、幂等键、输入绑定和结果。启动后
 对账任务与记录：确定成功的操作复用结果，确定失败的安全重试，结果不明的操作先校验目标状态，
 不得盲目覆盖或删除本地唯一副本。公开状态保持简单，内部 manifest 区分 staging、文件提交、
-对象上传和消息绑定等恢复点。
+对象上传等恢复点；BFF 单独持久化 publish intent，并周期对账消息绑定。
+
+publish 在 `running` 状态下报告 `capturing/captured/uploading` 阶段；`captured` 表示稳定副本已经
+提交，BFF 可释放下一 Turn 的屏障，但不是操作终态。
 
 创建异步操作返回 `operation_id`，Adapter 查询到终态；checkout 失败阻止 Agent 执行，publish 失败
 不附加文件。Manager 的结构化日志、任务标签和指标至少关联 `operation_id`、操作类型、状态、
@@ -185,5 +188,5 @@ Manager 为每次异步操作持久化 `pending/running/succeeded/failed`、幂�
 - 用户、租户、对话和 `artifact_id` 的业务 ACL；
 - Responses、Agent RPC/SSE、MCP Apps 数据面；
 - Artifact 元数据、文件内容代理或浏览器下载服务；
-- Workspace 目录监听或自动发布；
+- Workspace 目录扫描或发布 Agent 未明确声明的文件；
 - 向 Sandbox 提供对象存储、Open WebUI 或运行平台凭证。

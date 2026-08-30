@@ -53,8 +53,9 @@ Responses 输入不解析 OpenAI file ID。`artifact_id` 的 checkout 和 Worksp
 
 当前消息附件按 `user_message_id` 批量 checkout 到 `uploads/<user_message_id>`；可发布文件只来自
 `outputs/<assistant_message_id>`。BFF 验证两条消息属于同一对话链并绑定目标 Response，Adapter
-必须等待 checkout 成功后才启动 Codex Turn，并在发出终态 Response 前同步封存输出目录。
-`sandbox:` URI 只是候选文件；发布语义由存储设计定义。
+必须等待 checkout 成功后才启动 Codex Turn。终态 Response 中的 `sandbox:` URI 只是候选文件；
+BFF 收到终态事件后创建 publish intent，同一 Workspace 的下一 Turn 等待候选捕获完成。该流程
+不增加 Responses 字段，发布与重试语义由存储设计定义。
 
 Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用它匹配通知、取消和终态。
 该 ID 不进入 Workspace 路径或文件授权；其他 Agent Runtime 可以使用各自的执行 ID，而不改变

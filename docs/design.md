@@ -36,7 +36,7 @@ Open WebUI / 同源 BFF（Backend for Frontend）
 
 | 模块 | 职责 |
 |---|---|
-| Open WebUI / BFF | 用户认证、会话与文件 ACL；模型选择；Artifact 与消息绑定及稳定下载入口 |
+| Open WebUI / BFF | 用户认证、会话与文件 ACL；模型选择；Artifact 绑定、发布对账和稳定下载入口 |
 | LiteLLM | Responses 入口、模型目录与路由、部署认证和治理 |
 | Adapter | Responses 请求与事件映射、Worker RPC/SSE；调用 Manager 并转交 BFF 文件操作授权 |
 | Sandbox Manager | Sandbox 生命周期、Workspace 生命周期、受控文件操作编排和操作状态恢复 |
@@ -72,11 +72,12 @@ Manager 的能力按接口和权限分为三组，但保持为一个控制面服
 - 接收 BFF 已完成业务授权的操作授权，校验操作、`sandbox_id`、`workspace_id`、消息 ID、精确
   `artifact_id` 或相对路径、大小、有效期和单次 nonce 的绑定；
 - 可信控制面分配 `/workspace/uploads/<user_message_id>`、`work` 和
-  `outputs/<assistant_message_id>`；Agent 默认在 `work` 中运行，只写当前助手消息的输出目录；
-- checkout 在 Agent 执行前批量暂存、校验并原子提交；Agent 返回的 `sandbox:` 候选链接由用户
-  显式触发 publish，系统先固化只读快照，再上传并附加稳定下载链接；
+  `outputs/<assistant_message_id>`；Agent 默认在 `work` 中运行，发布范围只接受当前消息的输出；
+- checkout 在 Agent 执行前批量暂存、校验并原子提交；BFF 在终态 Response 中识别明确的
+  `sandbox:` 候选并立即创建发布记录（publish intent），用户点击和周期对账只推进同一幂等操作；
+- publish 先把精确候选捕获到 Worker 不可见的稳定副本，再异步上传并附加稳定下载链接；
 - 启动最多挂载一个 Workspace 的一次性可信任务，并持久记录操作状态、幂等键和提交结果，
-  使重启后可以对账；不通过目录监听自动发布文件。
+  使重启后可以对账；不扫描 Workspace 目录发现文件。
 
 Manager 不判断用户、会话或对话是否有权访问 `artifact_id`；这是 Open WebUI/BFF 的业务授权
 职责。`artifact_id` 本身不是凭证。Manager 也不转发文件字节、Agent RPC/SSE，且不向 Sandbox 下发
@@ -96,8 +97,9 @@ Adapter 将解析后的 Codex 模型传给 Agent Runtime；对外 Response 保�
 |---|---|---|
 | 用户、对话、笔记和业务 ACL | Open WebUI 数据库 | 配置 S3 不会把笔记和对话改存为对象 |
 | Artifact 内容与不可变 manifest | 私有对象存储 | `artifact_id` 不包含存储位置或权限 |
-| 消息绑定与业务引用 | Open WebUI 或调用方数据库 | BFF 稳定链接或短期 capability 下载 |
+| 消息绑定、publish intent 与业务引用 | Open WebUI 或调用方数据库 | BFF 对账、稳定链接或短期 capability 下载 |
 | 活动 Workspace | 本地 POSIX 卷 | 低延迟读写；仅挂载给对应 Worker 或一次性任务 |
+| 待发布候选副本 | Manager 本地持久卷 | 仅保留到 Artifact manifest 提交或操作过期 |
 | Workspace revision | 对象存储中的 restic 仓库 | 后台增量 checkpoint 和按需 restore |
 | Workspace/operation 控制状态 | Manager 持久数据库 | 记录本地代次、远端 head、租约与操作状态 |
 
@@ -164,8 +166,8 @@ Gateway、Adapter、Manager 和 Worker 使用独立、可单独发布的运行�
 - Manager 控制状态的持久化，以及重启后的资源和操作对账。
 
 Worker 固定为非 root、只读根文件系统、cap-drop all、`no-new-privileges`；Workspace 顶层和
-上传目录由可信控制面管理，Agent 只写 `work`、当前助手消息的输出目录、Runtime 状态和临时目录。
-部署凭证以只读 Secret 注入，不写入镜像。
+上传目录由可信控制面管理，Agent 可写 `work`、`outputs`、Runtime 状态和临时目录，但只有当前
+助手消息的输出可进入 publish。部署凭证以只读 Secret 注入，不写入镜像。
 
 ## 生命周期
 
@@ -186,8 +188,8 @@ restore 到新卷。临时 Workspace 可随 Sandbox 回收。只保存 `/workspa
 
 Worker 必须让 Agent Runtime 明确接受外层 Sandbox 的权限和网络边界，不得创建与 `runsc`
 不兼容的内层 Sandbox。默认工作目录为 `/workspace/work`；输入目录和当前输出目录由可信控制面
-注入，Agent 不得自行选择其他消息目录。需要审批或权限提升的操作必须 fail closed。具体
-Runtime 字段、方法和取值由实现级协议定义。
+注入，其他目录中的文件不能绑定到当前助手消息。需要审批或权限提升的操作必须 fail closed。
+具体 Runtime 字段、方法和取值由实现级协议定义。
 
 ## MCP Apps 与状态
 
