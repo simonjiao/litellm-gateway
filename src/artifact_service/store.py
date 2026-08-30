@@ -188,7 +188,7 @@ class S3ArtifactStore:
             descriptor = await self.inspect(artifact_id)
         except ArtifactNotFoundError:
             return False
-        await asyncio.to_thread(
+        response = await asyncio.to_thread(
             self._client.delete_objects,
             Bucket=self._settings.s3_bucket,
             Delete={
@@ -199,6 +199,8 @@ class S3ArtifactStore:
                 "Quiet": True,
             },
         )
+        if response.get("Errors"):
+            raise ArtifactConflictError("Object storage rejected Artifact deletion")
         return True
 
     async def close(self) -> None:
