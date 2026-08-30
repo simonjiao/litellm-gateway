@@ -48,8 +48,8 @@ Open WebUI / 同源 BFF（Backend for Frontend）
 
 ## Sandbox Manager 能力
 
-Manager 的能力按接口和权限分为三组，但保持为一个控制面服务，不拆成多个微服务。详细状态、
-约束和失败处理见 [Sandbox Manager 设计](sandbox-manager.md)。
+Manager 的能力作为一个控制面服务内的三组接口。详细状态、约束和失败处理见
+[Sandbox Manager 设计](sandbox-manager.md)。
 
 ### Sandbox 生命周期
 
@@ -77,7 +77,7 @@ Manager 的能力按接口和权限分为三组，但保持为一个控制面服
   `sandbox:` 候选并立即创建发布记录（publish intent），用户点击和周期对账只推进同一幂等操作；
 - publish 先把精确候选捕获到 Worker 不可见的稳定副本，再异步上传并附加稳定下载链接；
 - 启动最多挂载一个 Workspace 的一次性可信任务，并持久记录操作状态、幂等键和提交结果，
-  使重启后可以对账；不扫描 Workspace 目录发现文件。
+  使重启后可以对账。
 
 Manager 不判断用户、会话或对话是否有权访问 `artifact_id`；这是 Open WebUI/BFF 的业务授权
 职责。`artifact_id` 本身不是凭证。Manager 也不转发文件字节、Agent RPC/SSE，且不向 Sandbox 下发

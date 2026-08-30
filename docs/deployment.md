@@ -140,34 +140,15 @@ MCP App 交互续租；终态 Response 不保持无限租约。Sandbox 过期后
 容量与保留期、重试间隔与次数、本地卷保留期、远端 revision 保留期和对话删除宽限期均为部署
 参数，不写死在业务逻辑中。超限操作在创建任务前拒绝。
 
-## 实现方案与规模
+## 实现约束
 
-Open WebUI 使用以 v0.11.1 为基线的派生镜像，只增加同源 BFF、消息 Artifact 绑定和最小发布
-操作。Artifact Service 复用现有 FastAPI/Pydantic、boto3 和签名授权代码；RustFS 中不可变
-manifest 是提交标记，不新增 PostgreSQL、任务队列、断点续传协议或文件浏览器。服务无状态，
-文件流不落本地磁盘。
+Open WebUI 使用以 v0.11.1 为基线的派生镜像，内含同源 BFF、消息 Artifact 绑定和 publish intent。
+Artifact Service 复用现有 FastAPI/Pydantic、boto3 和签名授权代码，以 RustFS 中的不可变
+manifest 作为提交标记并保持无状态。
 
 Manager 继续使用 SQLite WAL；checkout/publish 构成其内部 Workspace 文件桥接能力，并复用
-同一个 `storage-ops` 一次性任务镜像。checkpoint/restore 直接调用镜像内的 restic；不增加独立
-Bridge 服务。现有 `DockerSandboxBackend` 保留为运行平台实现。
-
-以下仅估算相对当前仓库仍需新增或重写的手写逻辑，不重复计算已经落地的 Workspace 生命周期、
-Open WebUI 路由、restic 操作和授权基础：
-
-| 分类 | 实现内容 | 生产代码 | 测试代码 |
-|---|---|---:|---:|
-| Artifact 薄网关 | manifest、流式上传下载、摘要和短期 capability | 250–400 行 | 200–350 行 |
-| BFF 与 MCP 接入 | 用户上传下载、消息绑定和 App capability 转交 | 140–240 行 | 140–240 行 |
-| Workspace Bridge | 消息目录和批次原子 checkout | 180–300 行 | 200–320 行 |
-| 主动 publish | 候选捕获、intent、事件/点击触发、周期对账和失败恢复 | 570–820 行 | 650–910 行 |
-| 部署与 smoke | 镜像、配置、网络规则和端到端验收 | 100–180 行 | 100–180 行 |
-| 合计 | — | 1,240–1,940 行 | 1,290–2,000 行 |
-
-主动 publish 本身预计约 700 行生产代码和 800 行测试代码；不含 Artifact Service。预计全部剩余
-增量约 2,530–3,940 行。首版不引入 Temporal；现有
-Manager SQLite 状态机已经覆盖当前小时级任务，Temporal 会新增服务、持久化和 Worker 编排，
-但不会替代路径隔离、原子目录提交、S3 传输或 Docker 对账。实施顺序为 Artifact 薄网关、
-批次 checkout、主动 publish、MCP 复用接入和端到端验收。
+同一个 `storage-ops` 一次性任务镜像。checkpoint/restore 使用镜像内的 restic，
+`DockerSandboxBackend` 作为运行平台实现。
 
 ## Docker 参考部署
 
@@ -264,9 +245,9 @@ Workspace；Artifact 对象不参与 Worker 清理。
   助手消息的输出、符号链接和非普通文件。
 - 同一用户消息的全部附件原子可见；checkout 失败时 Agent 不启动，崩溃重试不暴露 staging。
 - BFF 拒绝跨对话消息 ID、错误的助手消息与 Response 绑定，以及指向非当前输出目录的
-  `sandbox:` 候选链接；不扫描 Workspace 目录或发布未声明文件。
-- 终态事件创建 publish intent；候选捕获完成前同一 Workspace 不启动下一 Turn，但不暂停整个
-  Workspace。上传未完成或消息绑定失败时不返回可下载附件。
+  `sandbox:` 候选链接。
+- 终态事件创建 publish intent；候选捕获完成前同一 Workspace 不启动下一 Turn。上传未完成或
+  消息绑定失败时不返回可下载附件。
 - 事件、用户点击、周期对账和 BFF 重启恢复复用同一幂等操作；临时上传失败可从稳定副本恢复，
   Artifact 已提交后的绑定失败不重新上传，相同幂等键不产生重复对象或附件。
 - checkpoint 成功并提交 revision 后才能延迟删除本地卷；失败时保留 dirty 本地卷。

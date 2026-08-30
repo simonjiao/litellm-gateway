@@ -1,13 +1,12 @@
 # Sandbox Manager 设计
 
-本文细化 [总体设计](design.md) 中的 Sandbox Manager。这里的能力分组是一个服务内部的接口和
-权限边界，不要求拆成多个微服务。
+本文细化 [总体设计](design.md) 中的 Sandbox Manager。能力分组是同一服务内部的接口和权限边界。
 
 ## 定位与边界
 
 Manager 是可信执行控制面，负责把“运行哪个 Sandbox、挂载哪个 Workspace、执行哪一个受控
-数据操作”落实到运行平台。它不处理 Responses、Agent RPC/SSE 或文件字节，也不判断用户和
-对话的业务权限。
+数据操作”落实到运行平台。Responses 和 Agent RPC/SSE 由 Adapter/Worker 处理，文件字节由
+一次性任务传输，用户和对话权限由 BFF 判断。
 
 | 标识 | 含义 |
 |---|---|
@@ -151,7 +150,7 @@ checkpoint/restore 任务使用 Manager 通过 RustFS STS 签发的临时 S3 会
 
 ### publish：生成物离开 Workspace
 
-publish 只处理终态 Response 中明确的 `sandbox:` 候选，不监听或扫描目录：
+publish 处理终态 Response 中明确的 `sandbox:` 候选：
 
 1. BFF 校验用户、对话、`assistant_message_id → response_id` 和精确相对路径，事务性创建唯一
    publish intent；每次驱动签发新 nonce 的短期授权，终态事件、用户点击和周期对账保持同一
@@ -182,11 +181,3 @@ publish 在 `running` 状态下报告 `capturing/captured/uploading` 阶段；`c
 创建异步操作返回 `operation_id`，Adapter 查询到终态；checkout 失败阻止 Agent 执行，publish 失败
 不附加文件。Manager 的结构化日志、任务标签和指标至少关联 `operation_id`、操作类型、状态、
 耗时、字节数和错误码，不记录传输令牌、URL 或存储凭证。
-
-## 明确不负责
-
-- 用户、租户、对话和 `artifact_id` 的业务 ACL；
-- Responses、Agent RPC/SSE、MCP Apps 数据面；
-- Artifact 元数据、文件内容代理或浏览器下载服务；
-- Workspace 目录扫描或发布 Agent 未明确声明的文件；
-- 向 Sandbox 提供对象存储、Open WebUI 或运行平台凭证。

@@ -1,7 +1,7 @@
 # 文件与 Workspace 存储
 
 本设计解决三类需求：对话中的用户文件与生成物、外部 MCP App 的受控 Artifact 交换，以及
-Sandbox Workspace 的可恢复性。Artifact 是不可变对象，不扩展为远程 Workspace 文件系统。
+Sandbox Workspace 的可恢复性。Artifact 是不可变对象，Workspace 使用 POSIX 文件系统。
 
 ## 存储分工
 
@@ -51,8 +51,6 @@ Open WebUI/BFF 负责业务 ACL，并维护消息与 `artifact_id` 的绑定；A
 对象；网关不推断跨系统引用，非所有者只能获得限时访问。外部 MCP App 的 capability 绑定
 调用方、`app_id`、Artifact、操作、大小和有效期。控制和文件流均使用 HTTPS；大文件流式传输，
 不落服务本地磁盘。
-首版不提供目录、搜索、版本树、跨 Artifact 事务、去重或断点续传。
-
 本地 `Path` 的 materialize/publish 不属于 Artifact API，而是 Manager 内部的 Workspace 文件
 桥接能力。`storage-ops` 只消费一次性 `UploadTarget` 或 `DownloadTarget`，不持有 Artifact Service
 或对象存储长期凭证。
@@ -89,9 +87,9 @@ Open WebUI 在调用 Responses 前建立并持久化用户消息和助手占位�
 
 BFF 验证用户消息和助手消息属于同一对话链，并在助手消息的服务端 metadata 中保存
 `response_id`。可信控制面只把完整输入、输出路径注入当前 Agent 执行。挂载或文件权限强制输入
-只读；当前消息的发布范围由授权和安全路径解析强制。目录名称不替代授权，写入 `outputs` 也
-不会自动成为 Artifact。checkpoint 保存整个 `/workspace`，不保存 `/tmp`；Manager 的候选暂存区
-不挂载给 Worker，也不进入 checkpoint。
+只读；当前消息的发布范围由授权和安全路径解析强制。只有终态回复明确引用并成功 publish 的
+输出成为 Artifact。checkpoint 保存整个 `/workspace`，不保存 `/tmp`；Manager 的候选暂存区不挂载
+给 Worker，也不进入 checkpoint。
 
 ## 用户上传与下载
 
@@ -123,23 +121,23 @@ Agent 将生成物写入当前 `outputs/<assistant_message_id>`，并在回复�
 `sandbox:/workspace/outputs/<assistant_message_id>/<relative_path>` 表示候选文件。该 URI 不是下载
 凭证。BFF 在终态 Response 中只识别这些明确候选，校验用户、对话、
 `assistant_message_id → response_id` 和相对路径后，按候选事务性创建唯一发布记录
-（publish intent）并立即驱动 Manager；不扫描 Workspace 目录。
+（publish intent）并立即驱动 Manager。
 
 Manager 安全打开当前消息目录中的普通文件，复制到 Worker 不可见的本地暂存区，校验文件在
 复制期间未变化，并以摘要和原子 manifest 提交稳定副本。该暂存区持久化且不进入 Workspace。
-BFF 只阻塞该 Workspace 的下一 Turn 到 Manager 报告捕获完成或失败；不暂停整个 Workspace。
-捕获失败时该候选失败，捕获成功后上传可在后台重试。每次上传尝试单独取得新的短期
-`UploadTarget`，Artifact Service 暂时不可用不影响已经提交的本地稳定副本。
+BFF 阻塞该 Workspace 的下一 Turn 到 Manager 报告捕获完成或失败。捕获失败时该候选失败，
+捕获成功后上传可在后台重试。每次上传尝试单独取得新的短期
+`UploadTarget`；本地稳定副本支持 Artifact Service 故障后的重试。
 
 publish intent 持久化 `pending/captured/uploading/uploaded/ready`、`operation_id`、尝试次数和下次
 重试时间；临时上传失败进入 `retryable`，Artifact 已提交但消息绑定失败进入 `binding_retry`，
 路径非法、文件缺失、变化或超限进入 `failed`。相同幂等键始终复用原操作和 Artifact。
 
-事件触发是主路径；用户点击未就绪候选时立即推进同一 intent，BFF 周期任务只扫描到期的 intent
-记录进行补偿。重试重新校验消息绑定并签发新 nonce 的短期授权，但保持原幂等键，不依赖在线
-用户会话。只有 `ready` 返回鉴权下载，其他状态不暴露对象地址。稳定副本保留到 Artifact manifest
-提交；未完成对象和放弃的未绑定 Artifact 分别由生命周期规则和宽限期清理。已绑定 Artifact
-不随 Sandbox 或 Workspace 清理删除。
+事件触发是主路径；用户点击未就绪候选时立即推进同一 intent，BFF 周期任务查询到期记录进行
+补偿。重试根据持久化 intent 和当前消息绑定签发新 nonce 的短期授权，并保持原幂等键。只有
+`ready` 返回鉴权下载，其他状态不暴露对象地址。稳定副本保留到 Artifact manifest 提交；未完成
+对象和放弃的未绑定 Artifact 分别由生命周期规则和宽限期清理。已绑定 Artifact 不随 Sandbox
+或 Workspace 清理删除。
 
 ## Workspace 持久化
 
