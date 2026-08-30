@@ -24,7 +24,7 @@
 | Responses Adapter | `runc` | control、agent-rpc | 无 |
 | Sandbox Manager | `runc` | control、storage | 单实例；SQLite 状态卷；受管 Worker、Workspace 卷和一次性任务权限 |
 | Sandbox Worker | `runsc` | agent-rpc、agent-egress | 独立工作区与 Runtime Secret |
-| 受控一次性任务 | `runc` | storage | 单 Workspace 挂载与单次操作授权 |
+| 受控一次性任务 | `runc` | storage | 单 Workspace 挂载、操作暂存空间与单次授权 |
 | agent-dns | `runc` | agent-egress | 无 |
 | egress-proxy | `runc` | agent-egress、egress-uplink | 无 |
 
@@ -94,6 +94,7 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
 - Manager 的 RustFS 父凭证仅限 Workspace repository 范围，用 STS 为单次任务签发
   15–60 分钟的 prefix/action 限定会话；任务不持有父凭证。
 - Agent Runtime 认证与配置以只读 Secret 注入 Worker；Workspace 与 Runtime 状态目录分离。
+- Workspace 顶层和 `uploads` 由可信身份管理；Worker 只写 `work` 和当前 Turn 的 `outputs`。
 - 底层平台接口权限过大时，Manager 应运行在专用节点或等价隔离域。
 
 ## Sandbox Worker 基线
@@ -103,7 +104,8 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
 - `runtime=runsc`；
 - 非 root、只读根文件系统、cap-drop all、`no-new-privileges`；
 - CPU、内存、PID、临时文件系统和执行 TTL 限额；
-- 独立工作区、Runtime 状态目录和只读部署 Secret；
+- 独立工作区、Runtime 状态目录和只读部署 Secret；默认工作目录为 `/workspace/work`，输入和
+  当前输出目录由可信控制面注入；
 - `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 指向 egress-proxy；
 - Agent Runtime 接受外层 Sandbox 边界，不创建不兼容的内层 Sandbox；审批和权限提升 fail closed。
 
@@ -134,8 +136,9 @@ MCP App 交互续租；终态 Response 不保持无限租约。Sandbox 过期后
 
 Open WebUI 使用以 v0.11.1 为基线的派生镜像，只增加同源 BFF 路由和最小消息附件集成，并直接
 复用上游认证、Chats、Files 与 Storage。Manager 使用标准库 SQLite WAL；checkout/publish
-使用同一个轻量一次性任务镜像，checkpoint/restore 直接调用镜像内的 restic。宿主机不安装
-restic，RustFS STS 负责临时 S3 凭证，也不增加常驻传输服务。现有
+构成 Manager 内部的 Workspace 文件桥接能力，使用同一个轻量 `storage-ops` 一次性任务镜像；
+checkpoint/restore 直接调用镜像内的 restic。宿主机不安装 restic，RustFS STS 负责临时 S3
+凭证，不增加独立 Bridge 或常驻传输服务。现有
 `DockerSandboxBackend` 保留为运行平台实现，扩展卷、标签和一次性任务管理。
 
 以下为本次需新增或重写的手写逻辑估算，不含现有未改代码、Open WebUI 上游代码、
@@ -143,11 +146,11 @@ restic、生成文件和依赖锁文件：
 
 | 分类 | 实现内容 | 生产代码 | 测试代码 |
 |---|---|---:|---:|
-| Open WebUI/BFF | 对话映射、ACL、签名授权、受控 Files 传输和消息附件 | 350–550 行 | 250–400 行 |
+| Open WebUI/BFF | 对话映射、ACL、Turn/批次授权、受控 Files 传输和消息附件 | 350–550 行 | 250–400 行 |
 | Adapter | 内部 Workspace 授权转交、敏感 metadata 剥离和操作调用 | 100–180 行 | 100–160 行 |
 | Manager 状态与接口 | SQLite schema/repository、模型、事务、nonce、STS 和控制接口 | 350–550 行 | 300–450 行 |
-| Manager Docker 控制 | 卷与 Sandbox 解耦、单写者、对账、reaper 和一次性任务编排 | 500–750 行 | 450–650 行 |
-| 一次性任务 | 安全 checkout/publish 客户端、restic 调用和结果清单 | 200–350 行 | 150–250 行 |
+| Manager Docker 控制 | 卷与 Sandbox 解耦、目录/单写者、对账、reaper 和一次性任务编排 | 500–750 行 | 450–650 行 |
+| 一次性任务 | 批次 checkout、publish 快照、restic 调用和结果清单 | 200–350 行 | 150–250 行 |
 | 部署与验收 | 镜像、Compose、Secret、storage 网络、脚本和 smoke | 150–250 行 | 150–250 行 |
 | 合计 | — | 1,650–2,630 行 | 1,400–2,160 行 |
 
@@ -194,10 +197,10 @@ DEFAULT_MODELS: codex-terra
 用户在聊天输入区的模型选择器切换模型，无需修改前端。
 
 启用 `AGENT_WORKSPACE_ENABLED` 和 `SANDBOX_MANAGER_STORAGE_ENABLED` 后，同源 BFF 为对话创建
-Workspace，上传附件在 Agent 执行前 checkout；`POST /api/agent/artifacts/publish` 将指定
-Workspace 普通文件附加到对应助手消息，并返回 Open WebUI 鉴权下载链接。RustFS 连接、Files
-凭证和 Workspace STS 父凭证见 `.env.example`；`run-stack.sh` 首次启动时生成独立 restic
-repository password，后续启动复用。
+Workspace；当前消息附件必须在本轮 Agent 任务提交前完成批次 checkout。
+`POST /api/agent/artifacts/publish` 显式发布当前 Turn 输出目录中的指定普通文件，完整上传后才
+附加助手消息并返回 Open WebUI 鉴权下载链接。RustFS 连接、Files 凭证和 Workspace STS 父凭证
+见 `.env.example`；`run-stack.sh` 首次启动时生成独立 restic repository password，后续启动复用。
 本地已有 rclone 业务凭证时，`scripts/configure-rustfs.py --remote rustfs` 将其导入 `.env` 并使用
 `static` 模式；生产环境默认使用支持 `AssumeRole` 的 `sts` 模式。
 
@@ -239,10 +242,17 @@ Workspace，并由 Manager 重启后对账。
 - 每个公共模型 ID 均路由到对应 Agent Runtime 模型，对外 Response 保持公共 ID。
 - 缺少授权、过期、重放或绑定到其他 Sandbox/Workspace 的文件操作全部 fail closed。
 - Worker 无法访问 Files 或对象存储；一次性任务最多访问一个 Workspace 和当前操作端点。
+- Agent 默认在 `work` 运行，不能修改 checkout 输入；publish 拒绝 `work`、`uploads`、其他
+  Turn 输出、符号链接和非普通文件。
+- 当前消息的全部附件原子可见；checkout 失败时 Agent Turn 不启动，崩溃重试不暴露 staging。
+- publish 使用写入停止后固化的只读快照；上传未完成或消息绑定失败时不返回可下载附件，
+  相同幂等键不产生重复对象或附件。
 - checkpoint 成功并提交 revision 后才能延迟删除本地卷；失败时保留 dirty 本地卷。
 - restore 在新空卷中完成校验后才启动 Worker，恢复内容与指定 revision 一致。
 - 已发布生成物在 Sandbox/Workspace 清理后仍可经 Open WebUI ACL 链接下载。
 - Manager 重启后可从持久记录对账 Workspace、受管任务和未完成操作。
+- checkout/publish 可按 `operation_id` 查询终态；日志和指标可关联状态、耗时、字节数和错误码，
+  且不包含传输令牌或存储凭证。
 
 以下脚本覆盖网络边界和基本 Responses 执行链路：
 

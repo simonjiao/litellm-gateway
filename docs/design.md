@@ -16,7 +16,7 @@ Browser
   ▼
 Open WebUI / 同源 BFF（Backend for Frontend）
   ├── Responses HTTP/SSE → LiteLLM Gateway → Responses Adapter ── RPC/SSE ─→ Worker (runsc)
-  │                                                  │                         ├── /workspace volume
+  │                                                  │                         ├── /workspace/{uploads,work,outputs}
   │                                                  │ control                 ├── policy egress → Internet
   │                                                  ▼                         └── approved MCP / local model
   │                                            Sandbox Manager
@@ -68,12 +68,14 @@ Manager 的能力按接口和权限分为三组，但保持为一个控制面服
 
 ### 受控文件操作
 
-- 接收 BFF 已完成业务授权的操作授权，校验操作、`sandbox_id`、`workspace_id`、对象或路径、
-  有效期和单次 nonce 的绑定；
-- 启动一次性可信任务，并且每次只挂载一个 Workspace、只注入完成该操作所需的短期凭证；
-- checkout 使用临时文件、大小/摘要校验和原子重命名；publish 校验规范化路径位于 Workspace
-  内，以只读方式上传并返回 Open WebUI `file_id`；
-- 持久记录操作状态和幂等键，使重启后可以判定重试、完成或安全失败。
+- 接收 BFF 已完成业务授权的操作授权，校验操作、`sandbox_id`、`workspace_id`、`turn_id`、
+  精确对象或路径、大小、有效期和单次 nonce 的绑定；
+- 可信控制面分配 `/workspace/uploads/<turn_id>`、`work` 和 `outputs/<turn_id>`；Agent 默认在
+  `work` 中运行，只有当前 Turn 的 `outputs` 文件可发布；
+- 当前消息被接受后，checkout 在本轮 Agent 任务提交前批量暂存、校验并原子提交；publish 只由
+  已认证的上层请求显式触发，先固化只读快照，再上传并附加下载链接；
+- 启动最多挂载一个 Workspace 的一次性可信任务，并持久记录操作状态、幂等键和提交结果，
+  使重启后可以对账；不通过目录监听自动发布文件。
 
 Manager 不判断用户、会话或对话是否有权访问 `file_id`；这是 Open WebUI/BFF 的业务授权职责。
 `file_id` 本身不是凭证。Manager 也不转发文件字节、Agent RPC/SSE，且不向 Sandbox 下发
@@ -153,8 +155,9 @@ Gateway、Adapter、Manager 和 Worker 使用独立、可单独发布的运行�
 - 工作负载级 DNS、方向性网络策略、Secret、持久卷和资源限制；
 - Manager 控制状态的持久化，以及重启后的资源和操作对账。
 
-Worker 固定为非 root、只读根文件系统、cap-drop all、`no-new-privileges`；仅 Workspace 和
-Agent Runtime 状态目录可写。部署凭证以只读 Secret 注入，不写入镜像。
+Worker 固定为非 root、只读根文件系统、cap-drop all、`no-new-privileges`；Workspace 顶层和
+上传目录由可信控制面管理，Agent 只写 `work`、当前 Turn 的 `outputs`、Runtime 状态和临时目录。
+部署凭证以只读 Secret 注入，不写入镜像。
 
 ## 生命周期
 
@@ -174,8 +177,9 @@ restore 到新卷。临时 Workspace 可随 Sandbox 回收。只保存 `/workspa
 ## Agent Runtime 约束
 
 Worker 必须让 Agent Runtime 明确接受外层 Sandbox 的权限和网络边界，不得创建与 `runsc`
-不兼容的内层 Sandbox。需要审批或权限提升的操作必须 fail closed。具体 Runtime 字段、方法和
-取值由实现级协议定义。
+不兼容的内层 Sandbox。默认工作目录为 `/workspace/work`；输入目录和当前输出目录由可信控制面
+注入，Agent 不得自行选择 `turn_id`。需要审批或权限提升的操作必须 fail closed。具体 Runtime
+字段、方法和取值由实现级协议定义。
 
 ## MCP Apps 与状态
 

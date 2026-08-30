@@ -51,6 +51,10 @@ publish 不属于 Responses 字段映射：Open WebUI/BFF 完成业务 ACL 后�
 Manager 执行。Worker 只看到 Workspace 路径，`file_id` 本身不构成授权。上传、下载与发布流程
 见 [文件与 Workspace 存储](storage.md)。
 
+当前消息附件按 `turn_id` 批量 checkout 到 `uploads/<turn_id>`；Adapter 必须等待提交成功后才
+启动该 Turn。publish 不是 Response 自动输出：已认证上层只能发布与目标助手消息绑定的
+`outputs/<turn_id>` 中已经关闭的文件，成功后由 BFF 把下载链接附加到助手消息。
+
 同源 BFF 在 Responses `metadata.agent_workspace_grant` 中注入短期签名授权。Adapter 在建立
 `ResponseRecord` 前移除该保留字段，只把它转交 Manager，不在响应、日志或事件中返回。没有该
 字段的新 Sandbox 使用临时 Workspace；签名无效、过期或绑定不匹配时在创建 Sandbox 前拒绝。

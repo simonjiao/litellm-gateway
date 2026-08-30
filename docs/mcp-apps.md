@@ -35,6 +35,10 @@ response_id + origin_call_id + app_id + server_id + resource_uri + allowed_tools
 AppSession 在 Response 终态后保留，但不延长 Sandbox 租约。Sandbox 已回收时，资源和工具
 调用返回 `sandbox_unavailable`；删除 Response 或 Adapter 重启时清除 AppSession。
 
+AppSession 只授权已绑定的 MCP 资源和工具，不授予 Open WebUI `file_id`、Workspace 路径或
+对象存储权限。MCP App 自身生成的文件仍通过其工具结果或上层 BFF 处理；本设计不提供外部 App
+直连 Workspace 或通用 Artifact Service。
+
 ## 浏览器边界
 
 - iframe 使用 `sandbox`，不启用 `allow-same-origin`；

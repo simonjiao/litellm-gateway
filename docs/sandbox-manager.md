@@ -13,11 +13,13 @@ Manager 是可信执行控制面，负责把“运行哪个 Sandbox、挂载哪�
 |---|---|
 | `sandbox_id` | 一次可销毁的计算实例 |
 | `workspace_id` | 独立于计算实例的 Workspace 身份，可配置为临时或可恢复 |
+| `turn_id` | 可信请求路径分配的一轮执行身份，用于隔离输入和可发布输出 |
 | `revision_id` | 已提交到远端仓库的不可变 Workspace 快照 |
 | `operation_id` | checkout、publish、checkpoint、restore 或 retire 的幂等操作 |
 
 一个可恢复 Workspace 同时最多有一个可写 Worker。Manager 使用 Workspace 锁和本地代次阻止
-旧 Worker 或重复任务继续写入。
+旧 Worker 或重复任务继续写入；同一 Workspace 的 Turn 串行执行，文件操作必须绑定活动
+Sandbox 和对应 Turn。
 
 ## 控制接口
 
@@ -88,6 +90,23 @@ Worker 和一次性任务，并恢复可安全重试的操作。
 自动 detach、checkpoint、cleanup 和 retire 是 Manager 状态机的内部维护操作，不依赖
 在线用户令牌。
 
+## Workspace 目录与 Turn 边界
+
+可信请求路径为每轮分配不可由浏览器或 Agent 指定的 `turn_id`，Manager 准备固定目录：
+
+| 路径 | 写入者 | 用途 |
+|---|---|---|
+| `/workspace/uploads/<turn_id>` | 一次性任务 | 当前消息附件；Agent 只读 |
+| `/workspace/work` | Agent | 项目文件和持久中间结果；默认工作目录 |
+| `/workspace/outputs/<turn_id>` | Agent | 当前 Turn 可发布生成物；Turn 结束后封存 |
+| `/tmp` | Agent | 不进入 checkpoint 的临时文件 |
+
+目录归属和只读属性由挂载或文件权限强制，提示词只说明用法。Workspace 顶层由 Manager 管理；
+checkout 不能选择其他目的目录，publish 不能读取 `work`、`uploads` 或其他 Turn 的输出。所有
+外部路径都以受控目录文件描述符为根解析，拒绝绝对路径、`..`、符号链接和非普通文件。Manager
+准备目录，Adapter 向 Agent 注入本轮输入和输出路径；同卷的私有 staging 不向 Agent 开放，并在
+checkpoint 前对账清理。
+
 ## 受控文件操作
 
 ### 操作授权
@@ -97,8 +116,8 @@ BFF 可以是 Open WebUI 的同源后端扩展，不要求新增独立公共服�
 
 ```text
 issuer + audience + operation + sandbox_id + workspace_id
-+ file_id/source 或 workspace_path
-+ destination/用途 + expires_at + nonce
++ turn_id + file_id/source 或 workspace_path
++ destination/用途 + max_bytes/摘要 + expires_at + nonce
 ```
 
 Manager 校验签名、有效期、单次 nonce、Sandbox/Workspace 归属和当前租约，并持久记录消费结果。
@@ -114,23 +133,30 @@ Worker；不使用 RustFS root 凭证。
 
 ### checkout：文件进入 Workspace
 
-1. BFF 完成业务授权并签发 checkout 授权。
-2. Manager 创建 `operation_id`，启动 `artifact-checkout-*` 一次性任务，只读访问获准源文件并
-   读写挂载一个 Workspace。
-3. 任务在挂载根内解析目标并拒绝符号链接穿越，通过受限 Files 接口读取对象，写入临时文件，
-   校验大小和摘要后原子重命名。
-4. Manager 记录完成结果；失败任务不得留下被误认为完整文件的目标路径。
+当前消息被接受后，Adapter 先创建或恢复 Sandbox，但在 checkout 成功前不提交本轮 Agent 任务：
+
+1. BFF 对当前消息的全部附件签发一个批次授权，目标固定为 `uploads/<turn_id>`。
+2. Manager 创建 `operation_id`；`artifact-checkout-*` 任务把全部文件下载到同一 Workspace 内的
+   Manager 私有 staging 目录，逐个校验大小、摘要和类型。
+3. 全部成功并持久化后，在同一文件系统内将 staging 目录原子重命名为最终目录，再记录成功；
+   Agent 因而只会看到全部附件或完全看不到本批附件。
+4. 任一文件失败则不启动本轮 Agent，并清理 staging。提交后崩溃时，Manager 依据 manifest 和
+   幂等键对账完成状态，不重复覆盖已提交目录。
 
 ### publish：生成物离开 Workspace
 
-1. BFF 授权发布指定 `workspace_path`；Manager 对路径做规范化并绑定当前 Workspace。
-2. `artifact-publish-*` 一次性任务只读挂载一个 Workspace，拒绝符号链接、目录和设备，并确认
-   已打开的普通文件仍位于挂载根目录内。
-3. 任务使用单次发布授权上传到 Open WebUI Files；Open WebUI 写入所有者、对话和文件元数据，
-   返回 `file_id` 与稳定下载链接。
-4. 链接每次下载仍由 Open WebUI 校验权限。已发布对象不随 Sandbox 或 Workspace 清理删除。
+publish 不监听目录，只能由已认证的上层请求显式触发，且生产者必须已经关闭文件：
 
-## 操作执行与恢复
+1. BFF 授权与目标助手消息绑定的 `outputs/<turn_id>` 内精确相对路径；Manager 校验 Turn、
+   Sandbox 和 Workspace 仍匹配，并取得排他的文件操作锁。
+2. Manager 短暂停止该 Workspace 的写入；一次性任务安全打开普通文件，复制为 Manager 管理的
+   只读快照并计算摘要，然后恢复写入。网络上传只读取快照。
+3. `artifact-publish-*` 使用单次授权上传到 Open WebUI Files。完整上传成功后，Open WebUI 才
+   写入所有者和文件元数据、附加助手消息，并返回 `file_id` 与稳定下载链接。
+4. 上传或消息绑定失败时不暴露不完整链接；未绑定对象延迟回收，相同幂等键复用已完成结果。
+   已成功发布的对象不随 Sandbox 或 Workspace 清理删除。
+
+## 操作执行、恢复与监控
 
 一次性任务使用普通 `runc`，按操作命名，最多获得一个 Workspace 挂载和一个受限网络目的地。
 对象存储或 Open WebUI 的长期凭证，以及 Docker/Manager 凭证，均不得注入任务，更不得注入
@@ -138,11 +164,17 @@ Worker。临时凭证仅在任务存活期内可用，任务终止后不持久�
 
 Manager 为每次操作持久化 `pending/running/succeeded/failed`、幂等键、输入绑定和结果。启动后
 对账任务与记录：确定成功的操作复用结果，确定失败的安全重试，结果不明的操作先校验目标状态，
-不得盲目覆盖或删除本地唯一副本。
+不得盲目覆盖或删除本地唯一副本。公开状态保持简单，内部 manifest 区分 staging、文件提交、
+对象上传和消息绑定等恢复点。
+
+创建操作返回 `operation_id`，Adapter 查询到终态；checkout 失败阻止当前 Turn，publish 失败
+不附加文件。Manager 的结构化日志、任务标签和指标至少关联 `operation_id`、操作类型、状态、
+耗时、字节数和错误码，不记录传输令牌、URL 或存储凭证。
 
 ## 明确不负责
 
 - 用户、租户、对话和 `file_id` 的业务 ACL；
 - Responses、Agent RPC/SSE、MCP Apps 数据面；
 - 文件内容代理、通用对象存储 API 或浏览器下载服务；
+- Workspace 目录监听、自动发布或独立通用 Artifact Service；
 - 向 Sandbox 提供对象存储、Open WebUI 或运行平台凭证。

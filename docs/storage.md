@@ -26,6 +26,11 @@ repository prefix，一次性任务只收到该 prefix 的临时会话凭证，�
 凭证只进入 Manager 创建的受信任一次性任务，任务结束即删除，Worker 不可见。生产环境使用
 可调用 `AssumeRole` 的独立 IAM 凭证和默认 `sts` 模式。
 
+文件后端只向上层提供上传会话、上传完成、元数据查询和短期下载源；本地 `Path` 的 materialize
+与 publish 不属于该接口，而是 Manager 内部的 Workspace 文件桥接能力。当前文件后端是 Open
+WebUI Files，`storage-ops` 只消费单次传输 URL 和令牌；该边界允许以后替换后端，但本版不部署
+独立 Artifact Service。
+
 ## 对话绑定
 
 同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces` 映射表。记录只保存
@@ -39,6 +44,21 @@ repository prefix，一次性任务只收到该 prefix 的临时会话凭证，�
 
 BFF 以 Open WebUI v0.11.1 派生镜像中的薄路由实现，直接复用其用户认证、Chats、Files 和
 Storage，不部署独立公共服务，也不复制 Open WebUI 的文件元数据或 ACL。
+
+## Workspace 目录约定
+
+可信请求路径为每轮分配 `turn_id`，浏览器和 Agent 均不能修改：
+
+```text
+/workspace/uploads/<turn_id>/   当前消息附件，Agent 只读
+/workspace/work/                持久工作目录，Agent 默认在此运行
+/workspace/outputs/<turn_id>/   当前 Turn 可发布生成物
+/tmp/                           不持久化的临时文件
+```
+
+挂载或文件权限强制目录归属；操作授权和安全路径解析决定文件能否进入或离开 Workspace。目录
+名称不替代授权，写入 `outputs` 也不会自动发布文件。checkpoint 保存整个 `/workspace`，不保存
+`/tmp`；同卷的 Manager 私有 staging 在 checkpoint 前清理或排除。
 
 ## 用户上传与下载
 
@@ -56,17 +76,24 @@ Open WebUI 把上传结果作为文件附件绑定到对话消息，并返回稳
 ## 文件进入 Sandbox
 
 Sandbox 不能凭 `file_id` 直接读取文件。BFF 校验当前用户、对话和文件 ACL 后，签发绑定
-`sandbox_id`、`workspace_id`、源文件、目标路径、有效期和 nonce 的单次 checkout 授权。
-Manager 校验绑定并启动 `artifact-checkout-*` 任务；任务只挂载一个 Workspace，通过受限 Files
-接口读取文件，临时写入、校验后原子重命名。具体约束见 [Sandbox Manager 设计](sandbox-manager.md)。
+`sandbox_id`、`workspace_id`、`turn_id`、源文件集合、大小/摘要、有效期和 nonce 的单次 checkout
+授权。消息被接受后，Adapter 可以先创建 Sandbox，但必须等待 checkout 成功才提交本轮 Agent
+任务。
+
+Manager 启动一个 `artifact-checkout-*` 批次任务，将全部附件暂存到同一 Workspace 文件系统，
+逐个校验后原子提交为 `uploads/<turn_id>`。任一附件失败时整批不可见且本轮不执行；重试通过
+`operation_id`、幂等键和 manifest 对账，具体约束见 [Sandbox Manager 设计](sandbox-manager.md)。
 
 ## 生成物发布与下载
 
-Agent 先把生成物写入 `/workspace`。用户选择发布后，BFF 授权具体路径；Manager 启动只读的
-`artifact-publish-*` 任务，确认规范化后的普通文件仍位于 Workspace 内，再上传到 Open WebUI
-Files。Open WebUI 返回 `file_id` 和稳定下载链接，BFF 将其作为文件附件写入对应对话消息。
-发布后的对象具有独立生命周期，即使 Sandbox 销毁或 Workspace 本地卷被清理，链接仍可按
-ACL 下载。
+Agent 将生成物写入当前 `outputs/<turn_id>` 并关闭文件；用户或受信任上层随后调用
+`POST /api/agent/artifacts/publish`。系统不扫描目录，也不自动发布。BFF 只授权与目标助手消息
+绑定的 Turn 和精确路径，Manager 短暂停止写入并固化只读快照，随后由 `artifact-publish-*`
+从快照上传到 Open WebUI Files。
+
+完整上传成功后，BFF 才把返回的 `file_id` 和稳定下载链接附加到对应助手消息。失败或结果不明
+时不暴露不完整文件；未绑定对象延迟回收，幂等重试不能产生重复附件。发布对象具有独立生命
+周期，即使 Sandbox 销毁或 Workspace 本地卷被清理，链接仍可按 ACL 下载。
 
 ## Workspace 持久化
 
@@ -82,5 +109,7 @@ checkpoint 失败或结果不明时保留 dirty 本地卷，绝不删除唯一�
 对话解除引用后，Manager 先标记延迟删除；宽限期到期且无活动租约或操作时，再删除该
 Workspace 的本地卷、repository prefix 和控制记录。
 
-存储实现复用 Open WebUI Files、兼容 S3 的私有对象存储和 restic。checkout/publish 使用受限
-HTTP 客户端和一次性任务，不设置常驻传输服务，也不构建通用文件 API。
+存储实现复用 Open WebUI Files、兼容 S3 的私有对象存储和 restic。checkout/publish 由 Manager
+编排同一个 `storage-ops` 一次性任务镜像；它不是常驻服务，也不构建通用文件 API。外部 MCP
+App 的 AppSession 或 `file_id` 不授予 Workspace、Files 或对象存储访问权；独立通用 Artifact
+Service 不属于本设计。
