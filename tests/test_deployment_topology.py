@@ -189,11 +189,13 @@ def test_stack_launcher_applies_both_agent_network_policies() -> None:
 def test_open_webui_workspace_bridge_is_a_pinned_thin_patch() -> None:
     dockerfile = (ROOT / "deploy" / "open-webui" / "Dockerfile").read_text()
     patcher = (ROOT / "deploy" / "open-webui" / "apply_patch.py").read_text()
+    router = (ROOT / "deploy" / "open-webui" / "agent_open_webui" / "router.py").read_text()
 
     assert "FROM ghcr.io/open-webui/open-webui:v0.11.1" in dockerfile
     assert "Open WebUI v0.11.1 patch anchor changed" in patcher
     assert "inject_workspace_context" in patcher
     assert "release_chat_workspace" in patcher
+    assert "max_lifetime=SETTINGS.terminal_grant_ttl_seconds" in router
 
 
 def test_agent_egress_policy_allows_only_declared_destinations() -> None:

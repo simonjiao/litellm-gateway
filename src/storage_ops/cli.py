@@ -226,6 +226,7 @@ def prepare_workspace(
     root = workspace.resolve(strict=True)
     if not root.is_dir():
         raise StorageOperationError("Workspace is not a directory")
+    _controlled_directory(root, ".", 0o755, 0, 0)
     work = _controlled_directory(root, "work", 0o770, agent_uid, agent_gid)
     _controlled_directory(root, "outputs", 0o755, 0, 0)
     _controlled_directory(root, "uploads", 0o555, 0, 0)

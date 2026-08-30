@@ -130,6 +130,7 @@ async def _transfer_claims(token: str, operation: str) -> dict[str, Any]:
             SETTINGS.signing_secret,
             audience="open-webui-transfer",
             operation=operation,
+            max_lifetime=SETTINGS.terminal_grant_ttl_seconds,
         )
     except GrantError as exc:
         raise HTTPException(status_code=403, detail="Transfer grant is invalid") from exc

@@ -191,6 +191,7 @@ class DockerSandboxBackend:
             if self._settings.storage_enabled:
                 await self._ensure_publish_spool_volume()
             await self._reconcile_managed_containers()
+            await self._cleanup_orphaned_ephemeral_workspaces()
             await self._recover_incomplete_operations()
             self._reaper_task = asyncio.create_task(self._reaper(), name="sandbox-manager-reaper")
         except Exception:
@@ -612,9 +613,17 @@ class DockerSandboxBackend:
                     raise SandboxAuthorizationError("Workspace grant has an invalid sandbox_id")
                 requested_sandbox_id = claimed_sandbox_id
 
-        workspace = await self._prepare_workspace(workspace)
-        if self._operation_runner is not None:
-            await self._operation_runner.prepare(workspace)
+        try:
+            workspace = await self._prepare_workspace(workspace)
+            if self._operation_runner is not None:
+                await self._operation_runner.prepare(workspace)
+        except Exception:
+            if workspace.kind == "ephemeral":
+                with suppress(Exception):
+                    await self._remove_volume(workspace.volume_name)
+                with suppress(StateConflictError):
+                    self._state.delete_workspace(workspace.id)
+            raise
         token = uuid.uuid4().hex
         sandbox_id = requested_sandbox_id or f"sandbox_{token}"
         token = sandbox_id.removeprefix("sandbox_")
@@ -1121,6 +1130,14 @@ class DockerSandboxBackend:
                     expected={"restoring"},
                     status="remote_only",
                 )
+
+    async def _cleanup_orphaned_ephemeral_workspaces(self) -> None:
+        for workspace in self._state.workspaces_with_status("detached_clean"):
+            if workspace.kind != "ephemeral" or workspace.active_sandbox_id is not None:
+                continue
+            await self._remove_volume(workspace.volume_name)
+            with suppress(StateConflictError):
+                self._state.delete_workspace(workspace.id)
 
     async def _finish_reconciled_sandbox(self, sandbox: SandboxRecord) -> None:
         try:

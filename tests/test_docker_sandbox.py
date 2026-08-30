@@ -274,6 +274,7 @@ async def test_manager_discards_workers_without_recoverable_lease_on_restart() -
     await second_backend.startup()
     try:
         assert docker_client.containers.created[0].removed is True
+        assert all(volume.removed for volume in docker_client.volumes.items.values())
         with pytest.raises(SandboxNotFoundError):
             await second_backend.inspect(sandbox.id)
     finally:

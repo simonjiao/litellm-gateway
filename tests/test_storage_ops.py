@@ -14,6 +14,7 @@ from storage_ops.cli import (
     capture,
     checkout,
     checkout_batch,
+    prepare_workspace,
     publish,
     restore,
     retire_repository,
@@ -37,6 +38,14 @@ class _S3:
     def delete_objects(self, **request: Any) -> dict[str, Any]:
         self.deleted.extend(item["Key"] for item in request["Delete"]["Objects"])
         return {}
+
+
+def test_prepare_workspace_controls_the_volume_root(tmp_path: Path) -> None:
+    tmp_path.chmod(0o777)
+
+    prepare_workspace(tmp_path)
+
+    assert tmp_path.stat().st_mode & 0o777 == 0o755
 
 
 def test_retire_deletes_every_object_under_one_repository_prefix() -> None:

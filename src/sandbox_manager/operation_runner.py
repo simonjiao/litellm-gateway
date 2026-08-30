@@ -278,13 +278,7 @@ class DockerOperationRunner:
             },
             "privileged": False,
             "cap_drop": ["ALL"],
-            "cap_add": (
-                ["DAC_READ_SEARCH"]
-                if role == "artifact-capture"
-                else ["CHOWN"]
-                if role in {"workspace-prepare", "artifact-checkout"}
-                else []
-            ),
+            "cap_add": _operation_capabilities(role),
             "security_opt": ["no-new-privileges:true"],
             "read_only": True,
             "user": self._settings.operation_container_user,
@@ -336,3 +330,13 @@ def _last_json_object(output: str) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
     raise OperationExecutionError("operation did not return a JSON result")
+
+
+def _operation_capabilities(role: str) -> list[str]:
+    if role in {"workspace-prepare", "artifact-checkout"}:
+        return ["CHOWN", "FOWNER"]
+    if role in {"artifact-capture", "workspace-checkpoint"}:
+        return ["DAC_READ_SEARCH"]
+    if role == "workspace-restore":
+        return ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+    return []

@@ -117,6 +117,7 @@ async def test_checkpoint_task_gets_one_workspace_and_prefix_scoped_sts(
     assert container.removed is True
     assert container.spec["runtime"] == "runc"
     assert container.spec["network"] == "agent-storage"
+    assert container.spec["cap_add"] == ["DAC_READ_SEARCH"]
     assert container.spec["volumes"][workspace.volume_name] == {
         "bind": "/workspace",
         "mode": "ro",
@@ -205,6 +206,7 @@ async def test_restore_mounts_workspace_volume_at_restic_target(tmp_path: Path) 
         "bind": "/restore",
         "mode": "rw",
     }
+    assert container.spec["cap_add"] == ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
 
 
 @pytest.mark.asyncio
@@ -241,5 +243,6 @@ async def test_retire_has_prefix_scoped_credentials_and_no_workspace_mount(tmp_p
 
     spec = docker_client.containers.created[0].spec
     assert spec["volumes"] == {}
+    assert spec["cap_add"] == []
     assert spec["command"][-1] == "workspaces/workspace_retire_test"
     assert "RESTIC_PASSWORD_FILE" not in spec["environment"]
