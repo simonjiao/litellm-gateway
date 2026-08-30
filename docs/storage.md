@@ -76,17 +76,20 @@ BFF 以 Open WebUI v0.11.1 派生镜像中的薄路由实现，复用其用户�
 
 ## Workspace 目录约定
 
-可信请求路径为每轮分配 `turn_id`，浏览器和 Agent 均不能修改：
+Open WebUI 在调用 Responses 前建立并持久化用户消息和助手占位消息；文件目录直接使用经 BFF
+校验的消息 ID：
 
 ```text
-/workspace/uploads/<turn_id>/   当前消息附件，Agent 只读
-/workspace/work/                持久工作目录，Agent 默认在此运行
-/workspace/outputs/<turn_id>/   当前 Turn 可发布生成物
-/tmp/                           不持久化的临时文件
+/workspace/uploads/<user_message_id>/       该用户消息的附件，Agent 只读
+/workspace/work/                            持久工作目录，Agent 默认在此运行
+/workspace/outputs/<assistant_message_id>/  该助手消息可发布的生成物
+/tmp/                                       不持久化的临时文件
 ```
 
-挂载或文件权限强制目录归属；操作授权和安全路径解析决定文件能否进入或离开 Workspace。目录
-名称不替代授权，写入 `outputs` 也不会自动发布文件。checkpoint 保存整个 `/workspace`，不保存
+BFF 验证用户消息和助手消息属于同一对话链，并在助手消息的服务端 metadata 中保存
+`response_id`。可信控制面只把完整输入、输出路径注入当前 Agent 执行。挂载或文件权限强制输入
+只读、仅当前输出目录可写；Adapter 在执行终态请求 Manager 封存输出目录。
+目录名称不替代授权，写入 `outputs` 也不会自动发布。checkpoint 保存整个 `/workspace`，不保存
 `/tmp`；同卷的 Manager 私有 staging 在 checkpoint 前清理或排除。
 
 ## 用户上传与下载
@@ -104,20 +107,26 @@ Open WebUI 把上传完成后返回的 `artifact_id` 绑定到对话消息，并
 ## 文件进入 Sandbox
 
 Sandbox 不能凭 `artifact_id` 直接读取文件。BFF 校验当前用户、对话和 Artifact 绑定后，签发
-绑定 `sandbox_id`、`workspace_id`、`turn_id`、源 Artifact 集合、大小/摘要、有效期和 nonce 的
-单次 checkout 授权。消息被接受后，Adapter 可以先创建 Sandbox，但必须等待 checkout 成功才
-提交本轮 Agent 任务。
+绑定 `sandbox_id`、`workspace_id`、`user_message_id`、`assistant_message_id`、源 Artifact 集合、
+大小/摘要、有效期和 nonce 的单次 checkout 授权。消息被接受后，Adapter 可以先创建 Sandbox，
+但必须等待 checkout 成功才提交 Agent 执行。
 
 Manager 启动一个 `artifact-checkout-*` 批次任务，将全部附件暂存到同一 Workspace 文件系统，
-逐个校验后原子提交为 `uploads/<turn_id>`。任一附件失败时整批不可见且本轮不执行；重试通过
-`operation_id`、幂等键和 manifest 对账，具体约束见 [Sandbox Manager 设计](sandbox-manager.md)。
+逐个校验后原子提交为 `uploads/<user_message_id>`，同时准备当前助手消息的空输出目录。任一附件
+失败时整批不可见且 Agent 不执行；重试通过 `operation_id`、幂等键和 manifest 对账，具体约束
+见 [Sandbox Manager 设计](sandbox-manager.md)。
 
 ## 生成物发布与下载
 
-Agent 将生成物写入当前 `outputs/<turn_id>` 并关闭文件；用户或受信任上层随后调用
-`POST /api/agent/artifacts/publish`。系统不扫描目录，也不自动发布。BFF 只授权与目标助手消息
-绑定的 Turn 和精确路径，Manager 短暂停止写入并固化只读快照，随后由 `artifact-publish-*`
-从快照创建 Artifact。
+Agent 将生成物写入当前 `outputs/<assistant_message_id>`，并在回复中使用
+`sandbox:/workspace/outputs/<assistant_message_id>/<relative_path>` 表示候选文件。该 URI 不是下载
+凭证；Open WebUI 将其呈现为发布操作而不是直接访问 Workspace。Response 终态且输出目录封存
+成功后操作才可点击；前端向 `POST /api/agent/artifacts/publish` 提交 `chat_id`、
+`assistant_message_id`、`response_id` 和相对路径。系统不扫描目录，也不自动发布。
+
+BFF 重新校验用户权限、消息与 Response 绑定和精确路径，再签发 publish 授权。Manager 只接受
+当前助手消息输出目录中的普通文件，短暂停止写入并固化只读快照，随后由
+`artifact-publish-*` 从快照创建 Artifact。
 
 完整上传成功后，BFF 才把返回的 `artifact_id` 和稳定下载链接附加到对应助手消息。失败或结果
 不明时不暴露不完整文件；未提交内容由对象存储生命周期回收，幂等重试不能产生重复附件。发布

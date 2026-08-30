@@ -102,7 +102,7 @@ egress-proxy 是 agent-egress 唯一外网出口。MCP Gateway 或本地模型�
 - Manager 的 RustFS 父凭证仅限 Workspace repository 范围，用 STS 为单次任务签发
   15–60 分钟的 prefix/action 限定会话；任务不持有父凭证。
 - Agent Runtime 认证与配置以只读 Secret 注入 Worker；Workspace 与 Runtime 状态目录分离。
-- Workspace 顶层和 `uploads` 由可信身份管理；Worker 只写 `work` 和当前 Turn 的 `outputs`。
+- Workspace 顶层和 `uploads` 由可信身份管理；Worker 只写 `work` 和当前助手消息的输出目录。
 - 底层平台接口权限过大时，Manager 应运行在专用节点或等价隔离域。
 
 ## Sandbox Worker 基线
@@ -157,8 +157,8 @@ Open WebUI 路由、restic 操作和授权基础：
 | 分类 | 实现内容 | 生产代码 | 测试代码 |
 |---|---|---:|---:|
 | Artifact 薄网关 | manifest、流式上传下载、摘要和短期 capability | 250–400 行 | 200–350 行 |
-| BFF 与 MCP 接入 | 消息绑定、稳定链接、App capability 转交 | 180–300 行 | 160–280 行 |
-| Workspace Bridge | Turn 目录、批次 checkout、publish 快照和崩溃对账 | 250–450 行 | 250–400 行 |
+| BFF 与 MCP 接入 | 消息绑定、候选/稳定链接、App capability 转交 | 180–300 行 | 160–280 行 |
+| Workspace Bridge | 消息目录、批次 checkout、输出封存、publish 快照和崩溃对账 | 250–450 行 | 250–400 行 |
 | 部署与 smoke | 镜像、配置、网络规则和端到端验收 | 100–180 行 | 100–180 行 |
 | 合计 | — | 780–1,330 行 | 710–1,210 行 |
 
@@ -205,10 +205,12 @@ DEFAULT_MODELS: codex-terra
 用户在聊天输入区的模型选择器切换模型，无需修改前端。
 
 启用 `AGENT_WORKSPACE_ENABLED` 和 `SANDBOX_MANAGER_STORAGE_ENABLED` 后，同源 BFF 为对话创建
-Workspace；当前消息附件必须在本轮 Agent 任务提交前完成批次 checkout。
-`POST /api/agent/artifacts/publish` 显式发布当前 Turn 输出目录中的指定普通文件，完整上传后才
-附加助手消息并返回 Open WebUI 鉴权下载链接。RustFS 连接、Artifact 凭证和 Workspace STS
-父凭证见 `.env.example`；`run-stack.sh` 首次启动时生成独立 restic repository password，后续复用。
+Workspace；用户消息附件必须在 Agent 执行前批量 checkout 到其消息目录，当前助手消息的输出
+目录由可信控制面注入。Open WebUI 把 Agent 返回的 `sandbox:` URI 显示为发布操作；用户点击后，
+前端以 `chat_id`、`assistant_message_id`、`response_id` 和相对路径调用
+`POST /api/agent/artifacts/publish`。完整上传后才附加助手消息并返回 Open WebUI 鉴权下载链接。
+RustFS 连接、Artifact 凭证和 Workspace STS 父凭证见 `.env.example`；`run-stack.sh` 首次启动时
+生成独立 restic repository password，后续复用。
 本地已有 rclone 业务凭证时，`scripts/configure-rustfs.py --remote rustfs` 将其导入 `.env` 并使用
 `static` 模式；生产环境默认使用支持 `AssumeRole` 的 `sts` 模式。
 
@@ -256,8 +258,11 @@ Workspace；Artifact 对象不参与 Worker 清理。
 - 外部 MCP App 可用短期目标读写获准 Artifact，但不能声明用户、绑定消息、访问 Workspace 或
   获取对象存储凭证。
 - Agent 默认在 `work` 运行，不能修改 checkout 输入；publish 拒绝 `work`、`uploads`、其他
-  Turn 输出、符号链接和非普通文件。
-- 当前消息的全部附件原子可见；checkout 失败时 Agent Turn 不启动，崩溃重试不暴露 staging。
+  助手消息的输出、符号链接和非普通文件。
+- 同一用户消息的全部附件原子可见；checkout 失败时 Agent 不启动，崩溃重试不暴露 staging。
+- Adapter 在终态 Response 前封存当前助手消息的输出目录；旧输出目录对 Agent 保持只读。
+- BFF 拒绝跨对话消息 ID、错误的助手消息与 Response 绑定，以及指向非当前输出目录的
+  `sandbox:` 候选链接；候选链接未经用户点击和 publish 成功不能下载。
 - publish 使用写入停止后固化的只读快照；上传未完成或消息绑定失败时不返回可下载附件，
   相同幂等键不产生重复对象或附件。
 - checkpoint 成功并提交 revision 后才能延迟删除本地卷；失败时保留 dirty 本地卷。

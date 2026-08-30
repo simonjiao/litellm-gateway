@@ -69,12 +69,12 @@ Manager 的能力按接口和权限分为三组，但保持为一个控制面服
 
 ### 受控文件操作
 
-- 接收 BFF 已完成业务授权的操作授权，校验操作、`sandbox_id`、`workspace_id`、`turn_id`、
-  精确 `artifact_id` 或路径、大小、有效期和单次 nonce 的绑定；
-- 可信控制面分配 `/workspace/uploads/<turn_id>`、`work` 和 `outputs/<turn_id>`；Agent 默认在
-  `work` 中运行，只有当前 Turn 的 `outputs` 文件可发布；
-- 当前消息被接受后，checkout 在本轮 Agent 任务提交前批量暂存、校验并原子提交；publish 只由
-  已认证的上层请求显式触发，先固化只读快照，再上传并附加下载链接；
+- 接收 BFF 已完成业务授权的操作授权，校验操作、`sandbox_id`、`workspace_id`、消息 ID、精确
+  `artifact_id` 或相对路径、大小、有效期和单次 nonce 的绑定；
+- 可信控制面分配 `/workspace/uploads/<user_message_id>`、`work` 和
+  `outputs/<assistant_message_id>`；Agent 默认在 `work` 中运行，只写当前助手消息的输出目录；
+- checkout 在 Agent 执行前批量暂存、校验并原子提交；Agent 返回的 `sandbox:` 候选链接由用户
+  显式触发 publish，系统先固化只读快照，再上传并附加稳定下载链接；
 - 启动最多挂载一个 Workspace 的一次性可信任务，并持久记录操作状态、幂等键和提交结果，
   使重启后可以对账；不通过目录监听自动发布文件。
 
@@ -114,6 +114,11 @@ Open WebUI/BFF 在受保护的映射表中维护 `chat_id → workspace_id`。�
 浏览器不能指定或修改 `workspace_id`。BFF 根据对话 ACL 取得映射并签发短期操作授权；Manager
 只处理不透明 `workspace_id`，不保存用户或对话 ACL。删除对话时解除映射，停止活动租约，并按
 保留策略延迟清理本地卷和远端 revision。
+
+BFF 使用 Open WebUI 已有的 `user_message_id` 隔离输入、`assistant_message_id` 隔离输出，并验证
+两条消息属于同一对话链及 `assistant_message_id → response_id` 绑定。文件范围只使用这两个
+消息 ID；Agent Runtime 的执行 ID（例如 Codex `turn.id`）只由 Adapter 管理，不进入文件路径
+或授权。
 
 ## 权限模型
 
@@ -159,7 +164,7 @@ Gateway、Adapter、Manager 和 Worker 使用独立、可单独发布的运行�
 - Manager 控制状态的持久化，以及重启后的资源和操作对账。
 
 Worker 固定为非 root、只读根文件系统、cap-drop all、`no-new-privileges`；Workspace 顶层和
-上传目录由可信控制面管理，Agent 只写 `work`、当前 Turn 的 `outputs`、Runtime 状态和临时目录。
+上传目录由可信控制面管理，Agent 只写 `work`、当前助手消息的输出目录、Runtime 状态和临时目录。
 部署凭证以只读 Secret 注入，不写入镜像。
 
 ## 生命周期
@@ -181,8 +186,8 @@ restore 到新卷。临时 Workspace 可随 Sandbox 回收。只保存 `/workspa
 
 Worker 必须让 Agent Runtime 明确接受外层 Sandbox 的权限和网络边界，不得创建与 `runsc`
 不兼容的内层 Sandbox。默认工作目录为 `/workspace/work`；输入目录和当前输出目录由可信控制面
-注入，Agent 不得自行选择 `turn_id`。需要审批或权限提升的操作必须 fail closed。具体 Runtime
-字段、方法和取值由实现级协议定义。
+注入，Agent 不得自行选择其他消息目录。需要审批或权限提升的操作必须 fail closed。具体
+Runtime 字段、方法和取值由实现级协议定义。
 
 ## MCP Apps 与状态
 

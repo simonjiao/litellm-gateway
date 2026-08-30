@@ -51,9 +51,15 @@ Responses 输入不解析 OpenAI file ID。`artifact_id` 的 checkout 和 Worksp
 执行。Worker 只看到 Workspace 路径，`artifact_id` 本身不构成授权。上传、下载与发布流程见
 [文件与 Workspace 存储](storage.md)。
 
-当前消息附件按 `turn_id` 批量 checkout 到 `uploads/<turn_id>`；Adapter 必须等待提交成功后才
-启动该 Turn。publish 不是 Response 自动输出：已认证上层只能发布与目标助手消息绑定的
-`outputs/<turn_id>` 中已经关闭的文件，成功后由 BFF 把下载链接附加到助手消息。
+当前消息附件按 `user_message_id` 批量 checkout 到 `uploads/<user_message_id>`；可发布文件只来自
+`outputs/<assistant_message_id>`。BFF 验证两条消息属于同一对话链并绑定目标 Response，Adapter
+必须等待 checkout 成功后才启动 Codex Turn，并在发出终态 Response 前封存输出目录。Agent 输出
+中的 `sandbox:` URI 只是候选文件；封存成功后用户点击，由 BFF 调用独立 publish 接口，成功后
+才把稳定下载链接附加到助手消息。
+
+Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用它匹配通知、取消和终态。
+该 ID 不进入 Workspace 路径或文件授权；其他 Agent Runtime 可以使用各自的执行 ID，而不改变
+文件接口。
 
 同源 BFF 在 Responses `metadata.agent_workspace_grant` 中注入短期签名授权。Adapter 在建立
 `ResponseRecord` 前移除该保留字段，只把它转交 Manager，不在响应、日志或事件中返回。没有该

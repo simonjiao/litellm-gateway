@@ -24,7 +24,7 @@ Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
 
 当前仓库已提供 Sandbox/Workspace 生命周期、对话绑定、Open WebUI Files checkout/publish，
 以及基于 restic 和私有对象存储的 checkpoint/restore。独立 Artifact Service、外部 MCP 文件
-接口、Turn 目录和批次原子操作仍待按设计实现。
+接口、消息目录和批次原子操作仍待按设计实现。
 
 ## 文档
 
