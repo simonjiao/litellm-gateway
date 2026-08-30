@@ -19,6 +19,7 @@ from open_webui.models.users import Users
 from open_webui.storage.provider import Storage
 from open_webui.utils.access_control.files import has_access_to_file
 
+from sandbox_api.artifact_refs import sandbox_candidates
 from sandbox_api.grants import issue_grant
 
 from .database import (
@@ -46,9 +47,6 @@ _reconcile_task: asyncio.Task[None] | None = None
 _intent_tasks: dict[str, asyncio.Task[None]] = {}
 _intent_locks: dict[str, asyncio.Lock] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
-_SANDBOX_URI = re.compile(r"sandbox:/workspace/outputs/([A-Za-z0-9_-]{1,128})/([^\s<>\"']+)")
-
-
 async def startup_workspace_bridge() -> None:
     global _client, _reconcile_task
     if not SETTINGS.enabled:
@@ -89,7 +87,7 @@ async def inject_workspace_context(
         return payload
     chat_id = metadata.get("chat_id")
     user_message_id = metadata.get("user_message_id")
-    assistant_message_id = metadata.get("assistant_message_id")
+    assistant_message_id = metadata.get("assistant_message_id") or metadata.get("message_id")
     if (
         not isinstance(chat_id, str)
         or not chat_id
@@ -250,7 +248,7 @@ async def record_terminal_response(
     if response_status != "completed":
         return []
     intent_ids: list[str] = []
-    for relative_path in _sandbox_candidates(output_text, assistant_message_id):
+    for relative_path in sandbox_candidates(output_text, assistant_message_id):
         intent_id = await create_publish_intent(
             chat_id=chat_id,
             owner_user_id=user_id,
@@ -819,28 +817,6 @@ async def _require_message(chat_id: str, message_id: str, role: str) -> dict[str
     if not message or message.get("role") != role:
         raise HTTPException(status_code=404, detail=f"{role.title()} message not found")
     return message
-
-
-def _sandbox_candidates(text: str, assistant_message_id: str) -> list[str]:
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for match in _SANDBOX_URI.finditer(text):
-        if match.group(1) != assistant_message_id:
-            continue
-        relative = match.group(2).rstrip(".,;:!?)]}")
-        if _safe_relative(relative) and relative not in seen:
-            seen.add(relative)
-            candidates.append(relative)
-    return candidates
-
-
-def _safe_relative(value: str) -> bool:
-    parts = value.split("/")
-    return bool(
-        value
-        and not value.startswith("/")
-        and all(part not in {"", ".", ".."} for part in parts)
-    )
 
 
 def _valid_message_id(value: Any) -> bool:

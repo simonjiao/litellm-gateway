@@ -268,5 +268,9 @@ bash scripts/run-basic-smoke.sh
 Manager、Gateway、宿主网桥和运行时解析得到的公网 IP。第二项经 Gateway、Adapter 和真实
 Worker 要求 Agent 在工作区执行随机 nonce 的 shell 摘要命令，并校验返回值。
 
-Storage smoke 还必须覆盖浏览器上传/下载、MCP upload/download、批次 checkout、事件/点击触发、
-周期对账、跨主体拒绝、幂等重试以及 Artifact Service 或对象存储故障后的恢复。
+Storage smoke 必须从已登录 Open WebUI 的正常页面请求开始，不得绕过该请求形态注入内部
+`assistant_message_id`、Workspace 或操作授权。生成物验收要求消息出现同源 BFF 附件链接，点击后
+返回的文件名、大小和摘要一致，
+且响应不是页面 HTML；只串联内部服务 API 不算端到端通过。其余覆盖浏览器上传、MCP
+upload/download、批次 checkout、事件/点击触发、周期对账、跨主体拒绝、幂等重试以及 Artifact
+Service 或对象存储故障后的恢复。
