@@ -209,8 +209,9 @@ Workspace；用户消息附件必须在 Agent 执行前批量 checkout 到其消
 目录由可信控制面注入。Open WebUI 把 Agent 返回的 `sandbox:` URI 显示为发布操作；用户点击后，
 前端以 `chat_id`、`assistant_message_id`、`response_id` 和相对路径调用
 `POST /api/agent/artifacts/publish`。完整上传后才附加助手消息并返回 Open WebUI 鉴权下载链接。
-RustFS 连接、Artifact 凭证和 Workspace STS 父凭证见 `.env.example`；`run-stack.sh` 首次启动时
-生成独立 restic repository password，后续复用。
+RustFS 连接、Open WebUI S3 凭证和 Workspace STS 父凭证见 `.env.example`；Artifact Service
+使用独立、仅限 Artifact prefix 的部署凭证。`run-stack.sh` 首次启动时生成独立 restic
+repository password，后续复用。
 本地已有 rclone 业务凭证时，`scripts/configure-rustfs.py --remote rustfs` 将其导入 `.env` 并使用
 `static` 模式；生产环境默认使用支持 `AssumeRole` 的 `sts` 模式。
 

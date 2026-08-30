@@ -88,7 +88,8 @@ Open WebUI 在调用 Responses 前建立并持久化用户消息和助手占位�
 
 BFF 验证用户消息和助手消息属于同一对话链，并在助手消息的服务端 metadata 中保存
 `response_id`。可信控制面只把完整输入、输出路径注入当前 Agent 执行。挂载或文件权限强制输入
-只读、仅当前输出目录可写；Adapter 在执行终态请求 Manager 封存输出目录。
+只读、仅当前输出目录可写；Adapter 在执行终态以幂等同步调用请求 Manager 封存输出目录。
+封存只关闭该消息的写入窗口，publish 才固化只读字节快照。
 目录名称不替代授权，写入 `outputs` 也不会自动发布。checkpoint 保存整个 `/workspace`，不保存
 `/tmp`；同卷的 Manager 私有 staging 在 checkpoint 前清理或排除。
 

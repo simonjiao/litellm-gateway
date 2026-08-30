@@ -28,7 +28,7 @@ Sandbox 和对应消息目录。
 |---|---|
 | Workspace | 创建、查询、checkpoint、restore 和解除引用；用户触发的请求要求 BFF 授权 |
 | Sandbox | 创建、查询、续租和销毁；创建时挂载一个可恢复 Workspace 或新建临时 Workspace |
-| 文件操作 | checkout、输出封存和 publish；返回可查询的 `operation_id`，不承载文件内容 |
+| 文件操作 | checkout 和 publish 返回可查询的 `operation_id`；输出封存是幂等同步调用；均不承载文件内容 |
 | 操作查询 | 返回状态和结果；相同幂等键复用已有操作 |
 
 浏览器不直接调用这些接口。Open WebUI/BFF 完成业务授权后调用 Adapter，Adapter 只转交签名
@@ -106,7 +106,9 @@ Manager 只接受 BFF 签名授权中符合 `[A-Za-z0-9_-]{1,128}` 的消息 ID�
 checkout 不能选择其他目的目录，publish 不能读取 `work`、`uploads` 或其他助手消息的输出。所有
 外部路径都以受控目录文件描述符为根解析，拒绝绝对路径、`..`、符号链接和非普通文件。Manager
 准备目录，Adapter 向 Agent 注入完整输入和输出路径，并在发送终态 Response 前请求 Manager
-封存输出目录；同卷的私有 staging 不向 Agent 开放，并在 checkpoint 前对账清理。
+封存输出目录。封存只关闭该消息目录的逻辑写入窗口，使其不再用于后续 Agent 写入；它不复制
+文件或创建 Artifact 快照，publish 才在排他锁下固化字节快照。同卷的私有 staging 不向 Agent
+开放，并在 checkpoint 前对账清理。
 
 ## 受控文件操作
 
@@ -128,7 +130,7 @@ checkout 成功后，Manager 记录当前 Sandbox 的 `assistant_message_id`。�
 Adapter 服务身份，并必须命中该记录；它不能切换消息目录或发布文件。
 
 授权使用独立密钥的 HMAC-SHA256 紧凑令牌；Adapter 只能转交令牌，不持有签名密钥。Manager 在
-创建操作时原子消费 nonce；一次性任务只收到绑定该 `operation_id` 的短期传输目标。
+创建异步操作时原子消费 nonce；一次性任务只收到绑定该 `operation_id` 的短期传输目标。
 
 checkout/publish 任务使用 Artifact Service 签发的短期、单对象上传或下载票据。
 checkpoint/restore 任务使用 Manager 通过 RustFS STS 签发的临时 S3 会话凭证；会话策略同时
@@ -169,12 +171,12 @@ publish 不监听目录，也不因 Agent 写入文件自动触发：
 对象存储或 Open WebUI 的长期凭证，以及 Docker/Manager 凭证，均不得注入任务，更不得注入
 Worker。临时凭证仅在任务存活期内可用，任务终止后不持久化。
 
-Manager 为每次操作持久化 `pending/running/succeeded/failed`、幂等键、输入绑定和结果。启动后
+Manager 为每次异步操作持久化 `pending/running/succeeded/failed`、幂等键、输入绑定和结果。启动后
 对账任务与记录：确定成功的操作复用结果，确定失败的安全重试，结果不明的操作先校验目标状态，
 不得盲目覆盖或删除本地唯一副本。公开状态保持简单，内部 manifest 区分 staging、文件提交、
 对象上传和消息绑定等恢复点。
 
-创建操作返回 `operation_id`，Adapter 查询到终态；checkout 失败阻止 Agent 执行，publish 失败
+创建异步操作返回 `operation_id`，Adapter 查询到终态；checkout 失败阻止 Agent 执行，publish 失败
 不附加文件。Manager 的结构化日志、任务标签和指标至少关联 `operation_id`、操作类型、状态、
 耗时、字节数和错误码，不记录传输令牌、URL 或存储凭证。
 

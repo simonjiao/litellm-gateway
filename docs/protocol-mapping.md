@@ -53,18 +53,18 @@ Responses 输入不解析 OpenAI file ID。`artifact_id` 的 checkout 和 Worksp
 
 当前消息附件按 `user_message_id` 批量 checkout 到 `uploads/<user_message_id>`；可发布文件只来自
 `outputs/<assistant_message_id>`。BFF 验证两条消息属于同一对话链并绑定目标 Response，Adapter
-必须等待 checkout 成功后才启动 Codex Turn，并在发出终态 Response 前封存输出目录。Agent 输出
-中的 `sandbox:` URI 只是候选文件；封存成功后用户点击，由 BFF 调用独立 publish 接口，成功后
-才把稳定下载链接附加到助手消息。
+必须等待 checkout 成功后才启动 Codex Turn，并在发出终态 Response 前同步封存输出目录。
+`sandbox:` URI 只是候选文件；发布语义由存储设计定义。
 
 Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用它匹配通知、取消和终态。
 该 ID 不进入 Workspace 路径或文件授权；其他 Agent Runtime 可以使用各自的执行 ID，而不改变
 文件接口。
 
-同源 BFF 在 Responses `metadata.agent_workspace_grant` 中注入短期签名授权。Adapter 在建立
-`ResponseRecord` 前移除该保留字段，只把它转交 Manager，不在响应、日志或事件中返回。没有该
-字段的新 Sandbox 使用临时 Workspace；签名无效、过期或绑定不匹配时在创建 Sandbox 前拒绝。
-`previous_response_id` 必须继续绑定原 Workspace，不能通过新授权切换。
+同源 BFF 在 Responses metadata 中注入两个保留字段：`agent_workspace_grant` 授权 Workspace
+创建或恢复，`agent_checkout_grants` 携带当前消息的 checkout 授权列表；有 checkout 时前者必需。
+Adapter 在建立 `ResponseRecord` 前移除并消费两者，只将授权转交 Manager，不在响应、日志或
+事件中返回。没有 Workspace 授权的新 Sandbox 使用临时 Workspace；签名无效、过期或绑定不匹配
+时在创建 Sandbox 前拒绝。`previous_response_id` 必须继续绑定原 Workspace，不能通过新授权切换。
 
 ## 请求映射
 
@@ -75,7 +75,7 @@ Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用�
 | input_image URL | `UserInput.Image` | 透传 URL 与 detail |
 | function_call_output | `UserInput.Text` | 带 call ID 的文本输入，不实现函数工具循环 |
 | `instructions` | `developerInstructions` | thread start/fork |
-| `metadata` | ResponseRecord | 保存公开字段；移除并消费 `agent_workspace_grant` |
+| `metadata` | ResponseRecord | 保存公开字段；移除并消费 `agent_workspace_grant`、`agent_checkout_grants` |
 | `reasoning.effort/summary` | turn start | 透传 |
 | `service_tier` | Thread/Turn `serviceTier` | 透传 |
 | `previous_response_id` | `thread/fork` | 使用前一 Thread/Turn 与同一 Agent Session |
