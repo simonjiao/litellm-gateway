@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
+
+import httpx
 
 from sandbox_manager.models import OperationInfo, SandboxInfo, WorkspaceInfo
 from sandbox_worker.models import AgentEvent
@@ -37,12 +38,14 @@ class PreparedExecution:
     record: ResponseRecord
     active: ActiveExecution
     builder: ResponsesEventBuilder
+    publish_grant: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _WorkspaceContext:
     grant: str | None
-    checkout_grants: tuple[str, ...]
+    checkout_grant: str | None
+    publish_grant: str | None
     public_metadata: dict[str, Any]
 
 
@@ -150,7 +153,7 @@ class CodexResponsesService:
     async def release_workspace(self, workspace_id: str, grant: str) -> WorkspaceInfo:
         return await self._sandbox.release_workspace(workspace_id, grant)
 
-    async def publish_artifact(self, response_id: str, grant: str) -> dict[str, Any]:
+    async def publish_artifact(self, response_id: str, grant: str) -> OperationInfo:
         record = await self._store.get(response_id)
         if record.workspace_id is None or record.sandbox_id is None:
             raise ResponseConflictError(
@@ -158,16 +161,20 @@ class CodexResponsesService:
                 code="workspace_unavailable",
             )
         operation = await self._sandbox.create_operation(grant)
-        operation = await self._wait_operation(operation)
+        operation = await self._wait_publish_capture(operation)
         if (
-            operation.status != "succeeded"
-            or operation.operation != "publish"
+            operation.operation != "publish"
             or operation.workspace_id != record.workspace_id
             or operation.sandbox_id != record.sandbox_id
-            or operation.result is None
         ):
-            raise UpstreamProtocolError(operation.error or "Workspace artifact publish failed")
-        return {"operation_id": operation.id, **operation.result}
+            raise UpstreamProtocolError("Workspace artifact publish binding changed")
+        return operation
+
+    async def inspect_artifact_operation(self, operation_id: str) -> OperationInfo:
+        operation = await self._sandbox.inspect_operation(operation_id)
+        if operation.operation != "publish":
+            raise ResponseConflictError("The operation is not an Artifact publish operation.")
+        return operation
 
     async def app_state(self, response_id: str) -> dict[str, Any]:
         await self._store.get(response_id)
@@ -392,7 +399,7 @@ class CodexResponsesService:
             record.sandbox_id = sandbox.id
             record.workspace_id = sandbox.workspace_id
             record.workspace_recoverable = sandbox.recoverable
-            await self._run_checkout_operations(sandbox, workspace_context.checkout_grants)
+            await self._run_checkout_operation(sandbox, workspace_context.checkout_grant)
             thread_id = await self._start_or_continue_thread(sandbox.id, request, mapped, previous)
             turn_params: dict[str, Any] = {
                 "threadId": thread_id,
@@ -432,7 +439,12 @@ class CodexResponsesService:
                 event_cursor=event_cursor,
             )
             builder = ResponsesEventBuilder(record)
-            prepared = PreparedExecution(record=record, active=active, builder=builder)
+            prepared = PreparedExecution(
+                record=record,
+                active=active,
+                builder=builder,
+                publish_grant=workspace_context.publish_grant,
+            )
             await self._store.put(record)
             await self._store.register_active(active)
             queue = await active.subscribe() if subscribe else None
@@ -449,25 +461,24 @@ class CodexResponsesService:
             self._semaphore.release()
             raise
 
-    async def _run_checkout_operations(
+    async def _run_checkout_operation(
         self,
         sandbox: SandboxInfo,
-        grants: tuple[str, ...],
+        grant: str | None,
     ) -> None:
-        if not grants:
+        if grant is None:
             return
         if sandbox.workspace_id is None:
             raise UpstreamProtocolError("Sandbox Manager did not return a Workspace binding")
         deadline = asyncio.get_running_loop().time() + self._settings.request_timeout_seconds
-        for grant in grants:
-            operation = await self._sandbox.create_operation(grant)
-            operation = await self._wait_operation(operation, deadline=deadline)
-            if (
-                operation.status != "succeeded"
-                or operation.workspace_id != sandbox.workspace_id
-                or operation.sandbox_id != sandbox.id
-            ):
-                raise UpstreamProtocolError(operation.error or "Workspace file checkout failed")
+        operation = await self._sandbox.create_operation(grant)
+        operation = await self._wait_operation(operation, deadline=deadline)
+        if (
+            operation.status != "succeeded"
+            or operation.workspace_id != sandbox.workspace_id
+            or operation.sandbox_id != sandbox.id
+        ):
+            raise UpstreamProtocolError(operation.error or "Workspace file checkout failed")
 
     async def _wait_operation(
         self,
@@ -481,6 +492,18 @@ class CodexResponsesService:
         while operation.status in {"pending", "running"}:
             if asyncio.get_running_loop().time() >= effective_deadline:
                 raise UpstreamProtocolError("Workspace operation timed out")
+            await asyncio.sleep(0.1)
+            operation = await self._sandbox.inspect_operation(operation.id)
+        return operation
+
+    async def _wait_publish_capture(self, operation: OperationInfo) -> OperationInfo:
+        deadline = asyncio.get_running_loop().time() + self._settings.request_timeout_seconds
+        while operation.status in {"pending", "running"} and operation.phase not in {
+            "captured",
+            "uploading",
+        }:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise UpstreamProtocolError("Workspace publish capture timed out")
             await asyncio.sleep(0.1)
             operation = await self._sandbox.inspect_operation(operation.id)
         return operation
@@ -552,7 +575,34 @@ class CodexResponsesService:
             lease_task.cancel()
             with suppress(asyncio.CancelledError):
                 await lease_task
+            await self._notify_terminal(prepared)
             await self._cleanup(prepared)
+
+    async def _notify_terminal(self, prepared: PreparedExecution) -> None:
+        if prepared.publish_grant is None or self._settings.publish_callback_url is None:
+            return
+        body = {
+            "response_id": prepared.record.id,
+            "status": prepared.record.status,
+            "output_text": prepared.record.output_text,
+            "grant": prepared.publish_grant,
+        }
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(10, connect=3), trust_env=False
+                ) as client:
+                    response = await client.post(self._settings.publish_callback_url, json=body)
+                response.raise_for_status()
+                return
+            except httpx.HTTPError:
+                if attempt == 2:
+                    logger.exception(
+                        "Failed to deliver terminal Artifact event for %s",
+                        prepared.record.id,
+                    )
+                    return
+                await asyncio.sleep(0.25 * (2**attempt))
 
     async def _maintain_sandbox_lease(self, active: ActiveExecution) -> None:
         try:
@@ -959,7 +1009,8 @@ class CodexResponsesService:
 def _workspace_context(metadata: dict[str, Any] | None) -> _WorkspaceContext:
     public_metadata = dict(metadata or {})
     grant_value = public_metadata.pop("agent_workspace_grant", None)
-    checkout_value = public_metadata.pop("agent_checkout_grants", None)
+    checkout_value = public_metadata.pop("agent_checkout_grant", None)
+    publish_value = public_metadata.pop("agent_publish_grant", None)
     if grant_value is not None and (
         not isinstance(grant_value, str) or not 16 <= len(grant_value) <= 64 * 1024
     ):
@@ -969,42 +1020,23 @@ def _workspace_context(metadata: dict[str, Any] | None) -> _WorkspaceContext:
             code="workspace_grant_invalid",
         )
 
-    checkout_grants: list[Any]
-    if checkout_value is None:
-        checkout_grants = []
-    elif isinstance(checkout_value, str):
-        try:
-            parsed = json.loads(checkout_value)
-        except json.JSONDecodeError as exc:
-            raise InvalidRequestError(
-                "The checkout grants are invalid.",
-                param="metadata.agent_checkout_grants",
-                code="workspace_grant_invalid",
-            ) from exc
-        checkout_grants = parsed if isinstance(parsed, list) else []
-        if not isinstance(parsed, list):
-            raise InvalidRequestError(
-                "The checkout grants must be a list.",
-                param="metadata.agent_checkout_grants",
-                code="workspace_grant_invalid",
-            )
-    elif isinstance(checkout_value, list):
-        checkout_grants = checkout_value
-    else:
-        raise InvalidRequestError(
-            "The checkout grants are invalid.",
-            param="metadata.agent_checkout_grants",
-            code="workspace_grant_invalid",
-        )
-    if len(checkout_grants) > 32 or any(
-        not isinstance(value, str) or not 16 <= len(value) <= 64 * 1024 for value in checkout_grants
+    if checkout_value is not None and (
+        not isinstance(checkout_value, str) or not 16 <= len(checkout_value) <= 64 * 1024
     ):
         raise InvalidRequestError(
-            "The checkout grants are invalid.",
-            param="metadata.agent_checkout_grants",
+            "The checkout grant is invalid.",
+            param="metadata.agent_checkout_grant",
             code="workspace_grant_invalid",
         )
-    if checkout_grants and grant_value is None:
+    if publish_value is not None and (
+        not isinstance(publish_value, str) or not 16 <= len(publish_value) <= 64 * 1024
+    ):
+        raise InvalidRequestError(
+            "The publish event grant is invalid.",
+            param="metadata.agent_publish_grant",
+            code="workspace_grant_invalid",
+        )
+    if checkout_value is not None and grant_value is None:
         raise InvalidRequestError(
             "File checkout requires a Workspace grant.",
             param="metadata.agent_workspace_grant",
@@ -1012,7 +1044,8 @@ def _workspace_context(metadata: dict[str, Any] | None) -> _WorkspaceContext:
         )
     return _WorkspaceContext(
         grant=grant_value,
-        checkout_grants=tuple(checkout_grants),
+        checkout_grant=checkout_value,
+        publish_grant=publish_value,
         public_metadata=public_metadata,
     )
 

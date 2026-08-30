@@ -49,6 +49,7 @@ class OperationRecord:
     id: str
     operation: str
     status: str
+    phase: str | None
     workspace_id: str
     sandbox_id: str | None
     idempotency_key: str
@@ -130,6 +131,7 @@ class StateStore:
                 id TEXT PRIMARY KEY,
                 operation TEXT NOT NULL,
                 status TEXT NOT NULL,
+                phase TEXT,
                 workspace_id TEXT NOT NULL REFERENCES workspaces(id),
                 sandbox_id TEXT,
                 idempotency_key TEXT NOT NULL UNIQUE,
@@ -149,6 +151,12 @@ class StateStore:
             );
             """
         )
+        operation_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(operations)").fetchall()
+        }
+        if "phase" not in operation_columns:
+            connection.execute("ALTER TABLE operations ADD COLUMN phase TEXT")
         self._connection = connection
 
     def close(self) -> None:
@@ -616,6 +624,7 @@ class StateStore:
         operation_id: str,
         *,
         status: str,
+        phase: str | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
         now: int | None = None,
@@ -625,11 +634,12 @@ class StateStore:
             changed = connection.execute(
                 """
                 UPDATE operations
-                SET status = ?, result_json = ?, error = ?, updated_at = ?
+                SET status = ?, phase = ?, result_json = ?, error = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     status,
+                    phase,
                     json.dumps(result, sort_keys=True, separators=(",", ":"))
                     if result is not None
                     else None,
@@ -687,6 +697,7 @@ def _operation(row: sqlite3.Row) -> OperationRecord:
         id=str(row["id"]),
         operation=str(row["operation"]),
         status=str(row["status"]),
+        phase=str(row["phase"]) if row["phase"] is not None else None,
         workspace_id=str(row["workspace_id"]),
         sandbox_id=str(row["sandbox_id"]) if row["sandbox_id"] is not None else None,
         idempotency_key=str(row["idempotency_key"]),

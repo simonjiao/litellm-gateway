@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -100,7 +101,7 @@ def build_container_spec(
         "SANDBOX_WORKER_HOST": "0.0.0.0",
         "SANDBOX_WORKER_PORT": str(settings.worker_port),
         "SANDBOX_WORKER_CODEX_COMMAND": settings.codex_command,
-        "SANDBOX_WORKER_CODEX_WORKDIR": "/workspace",
+        "SANDBOX_WORKER_CODEX_WORKDIR": "/workspace/work",
         "SANDBOX_WORKER_CODEX_MODEL": settings.codex_model or "",
         "SANDBOX_WORKER_MCP_APPS_ENABLED": str(settings.mcp_apps_enabled).lower(),
         "HTTP_PROXY": settings.egress_proxy_url,
@@ -187,6 +188,8 @@ class DockerSandboxBackend:
                     sts_client=sts,
                 )
                 self._owns_operation_runner = True
+            if self._settings.storage_enabled:
+                await self._ensure_publish_spool_volume()
             await self._reconcile_managed_containers()
             await self._recover_incomplete_operations()
             self._reaper_task = asyncio.create_task(self._reaper(), name="sandbox-manager-reaper")
@@ -293,37 +296,62 @@ class DockerSandboxBackend:
                 or workspace.active_sandbox_id != sandbox_id
             ):
                 raise SandboxAuthorizationError("Operation Sandbox binding is not active")
-            url = _required_claim(claims, "transfer_url")
-            token = _required_claim(claims, "transfer_token")
-            self._validate_transfer_url(url)
-            max_bytes = claims.get("max_bytes")
-            if not isinstance(max_bytes, int) or not 0 < max_bytes <= 10 * 1024**3:
-                raise SandboxAuthorizationError("Operation max_bytes is invalid")
             if operation == "checkout":
-                destination = _required_claim(claims, "destination")
-                sha256 = claims.get("sha256")
-                if sha256 is not None and (
-                    not isinstance(sha256, str) or re.fullmatch(r"[a-fA-F0-9]{64}", sha256) is None
-                ):
-                    raise SandboxAuthorizationError("Operation sha256 is invalid")
+                user_message_id = _message_id_claim(claims, "user_message_id")
+                assistant_message_id = _message_id_claim(claims, "assistant_message_id")
+                artifacts = _checkout_artifacts(
+                    claims.get("artifacts"), self._validate_transfer_url
+                )
                 input_data = {
-                    "file_id": _required_claim(claims, "file_id"),
-                    "destination": destination,
-                    "max_bytes": max_bytes,
-                    "sha256": sha256,
+                    "user_message_id": user_message_id,
+                    "assistant_message_id": assistant_message_id,
+                    "artifacts": [
+                        {
+                            key: item[key]
+                            for key in ("artifact_id", "filename", "size", "sha256", "max_bytes")
+                        }
+                        for item in artifacts
+                    ],
                 }
+                claims = {**claims, "artifacts": artifacts}
             else:
-                source = _required_claim(claims, "workspace_path")
+                assistant_message_id = _message_id_claim(claims, "assistant_message_id")
+                response_id = _required_claim(claims, "response_id")
+                if re.fullmatch(r"resp_[a-f0-9]{32}", response_id) is None:
+                    raise SandboxAuthorizationError("Operation response_id is invalid")
+                relative_path = _safe_output_relative(
+                    _required_claim(claims, "output_relative_path")
+                )
+                max_bytes = claims.get("max_bytes")
+                if not isinstance(max_bytes, int) or not 0 < max_bytes <= 10 * 1024**3:
+                    raise SandboxAuthorizationError("Operation max_bytes is invalid")
                 input_data = {
-                    "workspace_path": source,
+                    "assistant_message_id": assistant_message_id,
+                    "response_id": response_id,
+                    "output_relative_path": relative_path,
+                    "workspace_path": f"outputs/{assistant_message_id}/{relative_path}",
                     "max_bytes": max_bytes,
                 }
-            claims = {
-                **claims,
-                "transfer_url": url,
-                "transfer_token": token,
-                "max_bytes": max_bytes,
-            }
+                target_values = [
+                    claims.get("artifact_id"),
+                    claims.get("upload_url"),
+                    claims.get("upload_token"),
+                ]
+                if any(value is not None for value in target_values):
+                    if not all(isinstance(value, str) and value for value in target_values):
+                        raise SandboxAuthorizationError("Artifact upload target is incomplete")
+                    artifact_id = str(target_values[0])
+                    upload_url = str(target_values[1])
+                    upload_token = str(target_values[2])
+                    if re.fullmatch(r"artifact_[a-f0-9]{32}", artifact_id) is None:
+                        raise SandboxAuthorizationError("Operation artifact_id is invalid")
+                    self._validate_transfer_url(upload_url)
+                    claims = {
+                        **claims,
+                        "artifact_id": artifact_id,
+                        "upload_url": upload_url,
+                        "upload_token": upload_token,
+                    }
             idempotency_key = _idempotency_key(claims, requested_operation)
         elif operation == "checkpoint":
             if workspace.active_sandbox_id is not None:
@@ -359,13 +387,34 @@ class DockerSandboxBackend:
             )
         except StateConflictError as exc:
             raise SandboxConflictError(str(exc)) from exc
+        if (
+            record.operation != operation
+            or record.workspace_id != workspace.id
+            or record.sandbox_id != sandbox_id
+            or record.input != input_data
+        ):
+            raise SandboxConflictError("Operation idempotency key is bound to another request")
         if operation == "checkpoint" and workspace.status == "detached_clean":
             record = self._state.update_operation(
                 record.id,
                 status="succeeded",
                 result={"revision_id": workspace.head_revision, "already_clean": True},
             )
-        elif created or record.status == "failed":
+            return _operation_info(record)
+        resume_captured_publish = (
+            operation == "publish"
+            and record.status == "running"
+            and record.phase == "captured"
+            and isinstance(claims.get("upload_url"), str)
+        )
+        if created or record.status == "failed" or resume_captured_publish:
+            if not created:
+                record = self._state.update_operation(
+                    record.id,
+                    status="pending",
+                    phase=record.phase,
+                    result=record.result,
+                )
             if operation == "checkpoint":
                 coroutine = self._checkpoint_workspace(workspace.id)
             elif operation == "restore":
@@ -394,39 +443,111 @@ class DockerSandboxBackend:
             )
             return
         workspace = self._get_workspace(operation.workspace_id)
-        try:
-            self._state.update_operation(operation.id, status="running")
-            if operation.operation == "checkout":
-                result = await self._operation_runner.checkout(
+        if operation.operation == "checkout":
+            try:
+                self._state.update_operation(operation.id, status="running")
+                lock = self._workspace_locks.setdefault(workspace.id, asyncio.Lock())
+                async with lock:
+                    artifacts = claims.get("artifacts")
+                    assert isinstance(artifacts, list)
+                    result = await self._operation_runner.checkout(
+                        operation.id,
+                        workspace,
+                        user_message_id=str(operation.input["user_message_id"]),
+                        assistant_message_id=str(operation.input["assistant_message_id"]),
+                        artifacts=artifacts,
+                    )
+                self._state.update_operation(operation.id, status="succeeded", result=result)
+            except Exception as exc:
+                self._state.update_operation(
                     operation.id,
-                    workspace,
-                    destination=str(operation.input["destination"]),
-                    url=str(claims["transfer_url"]),
-                    token=str(claims["transfer_token"]),
-                    max_bytes=int(operation.input["max_bytes"]),
-                    sha256=(
-                        str(operation.input["sha256"])
-                        if operation.input.get("sha256") is not None
-                        else None
-                    ),
+                    status="failed",
+                    error=_operation_error(exc),
                 )
-            else:
-                result = await self._operation_runner.publish(
+                logger.exception("Failed checkout operation %s", operation.id)
+            return
+
+        capture_result: dict[str, Any] | None = None
+        if isinstance(operation.result, dict):
+            value = operation.result.get("capture")
+            if isinstance(value, dict):
+                capture_result = value
+        try:
+            lock = self._workspace_locks.setdefault(workspace.id, asyncio.Lock())
+            async with lock:
+                self._state.update_operation(
+                    operation.id,
+                    status="running",
+                    phase="capturing",
+                    result={"capture": capture_result} if capture_result is not None else None,
+                )
+                capture_result = await self._operation_runner.capture(
                     operation.id,
                     workspace,
                     source=str(operation.input["workspace_path"]),
-                    url=str(claims["transfer_url"]),
-                    token=str(claims["transfer_token"]),
                     max_bytes=int(operation.input["max_bytes"]),
                 )
-            self._state.update_operation(operation.id, status="succeeded", result=result)
+                self._state.update_operation(
+                    operation.id,
+                    status="running",
+                    phase="captured",
+                    result={"capture": capture_result},
+                )
+            upload_url = claims.get("upload_url")
+            upload_token = claims.get("upload_token")
+            artifact_id = claims.get("artifact_id")
+            if not all(
+                isinstance(value, str) and value
+                for value in (upload_url, upload_token, artifact_id)
+            ):
+                return
+            existing_target = (
+                operation.result.get("target_artifact_id")
+                if isinstance(operation.result, dict)
+                else None
+            )
+            if existing_target is not None and existing_target != artifact_id:
+                raise OperationExecutionError("Publish operation Artifact binding changed")
+            self._state.update_operation(
+                operation.id,
+                status="running",
+                phase="uploading",
+                result={"capture": capture_result, "target_artifact_id": artifact_id},
+            )
+            result = await self._operation_runner.upload_capture(
+                operation.id,
+                workspace,
+                url=str(upload_url),
+                token=str(upload_token),
+            )
+            if result.get("artifact_id") != artifact_id:
+                raise OperationExecutionError("Artifact upload returned another artifact_id")
+            self._state.update_operation(
+                operation.id,
+                status="succeeded",
+                phase="uploading",
+                result={
+                    "capture": capture_result,
+                    "target_artifact_id": artifact_id,
+                    "artifact": result,
+                },
+            )
         except Exception as exc:
+            phase = "captured" if capture_result is not None else "capturing"
+            failed_result: dict[str, Any] | None = None
+            if capture_result is not None:
+                failed_result = {"capture": capture_result}
+                target_artifact_id = claims.get("artifact_id")
+                if isinstance(target_artifact_id, str):
+                    failed_result["target_artifact_id"] = target_artifact_id
             self._state.update_operation(
                 operation.id,
                 status="failed",
+                phase=phase,
+                result=failed_result,
                 error=_operation_error(exc),
             )
-            logger.exception("Failed %s operation %s", operation.operation, operation.id)
+            logger.exception("Failed publish operation %s", operation.id)
 
     async def _restore_requested_workspace(self, operation: OperationRecord) -> None:
         try:
@@ -453,11 +574,10 @@ class DockerSandboxBackend:
             logger.exception("Failed requested restore for Workspace %s", operation.workspace_id)
 
     def _validate_transfer_url(self, url: str) -> None:
-        base_url = self._settings.files_transfer_base_url
+        base_url = self._settings.artifact_transfer_base_url
         parsed = urlsplit(url)
         if (
-            base_url is None
-            or parsed.scheme not in {"http", "https"}
+            parsed.scheme not in {"http", "https"}
             or not parsed.hostname
             or not (url == base_url or url.startswith(f"{base_url}/"))
         ):
@@ -493,6 +613,8 @@ class DockerSandboxBackend:
                 requested_sandbox_id = claimed_sandbox_id
 
         workspace = await self._prepare_workspace(workspace)
+        if self._operation_runner is not None:
+            await self._operation_runner.prepare(workspace)
         token = uuid.uuid4().hex
         sandbox_id = requested_sandbox_id or f"sandbox_{token}"
         token = sandbox_id.removeprefix("sandbox_")
@@ -755,6 +877,21 @@ class DockerSandboxBackend:
                 f"Failed to create Workspace volume '{workspace.volume_name}': {exc}"
             ) from exc
 
+    async def _ensure_publish_spool_volume(self) -> None:
+        try:
+            await asyncio.to_thread(
+                self._docker.volumes.create,
+                name=self._settings.publish_spool_volume,
+                labels={
+                    MANAGED_LABEL: "true",
+                    ROLE_LABEL: "publish-spool",
+                },
+            )
+        except Exception as exc:
+            raise SandboxBackendError(
+                f"Failed to create publish spool volume: {exc}"
+            ) from exc
+
     async def _prepare_workspace(self, workspace: WorkspaceRecord) -> WorkspaceRecord:
         lock = self._workspace_locks.setdefault(workspace.id, asyncio.Lock())
         async with lock:
@@ -956,9 +1093,17 @@ class DockerSandboxBackend:
 
     async def _recover_incomplete_operations(self) -> None:
         for operation in self._state.incomplete_operations():
+            result = operation.result
+            phase = operation.phase
+            if operation.operation == "publish" and isinstance(result, dict):
+                capture = result.get("capture")
+                if isinstance(capture, dict):
+                    phase = "captured"
             self._state.update_operation(
                 operation.id,
                 status="failed",
+                phase=phase,
+                result=result,
                 error="Manager restarted before the operation result was committed",
             )
         for workspace in self._state.workspaces_with_status("checkpointing"):
@@ -1231,6 +1376,7 @@ def _operation_info(record: OperationRecord) -> OperationInfo:
         id=record.id,
         operation=record.operation,
         status=record.status,  # type: ignore[arg-type]
+        phase=record.phase,  # type: ignore[arg-type]
         workspace_id=record.workspace_id,
         sandbox_id=record.sandbox_id,
         result=record.result,
@@ -1254,6 +1400,84 @@ def _idempotency_key(claims: dict[str, Any], operation: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 256:
         raise SandboxAuthorizationError("Operation idempotency_key is invalid")
     return f"{operation}:{value}"
+
+
+def _message_id_claim(claims: dict[str, Any], name: str) -> str:
+    value = _required_claim(claims, name)
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is None:
+        raise SandboxAuthorizationError(f"Operation {name} is invalid")
+    return value
+
+
+def _safe_output_relative(value: str) -> str:
+    parts = value.split("/")
+    if (
+        value.startswith("/")
+        or not parts
+        or any(part in {"", ".", ".."} for part in parts)
+        or "\x00" in value
+    ):
+        raise SandboxAuthorizationError("Operation output_relative_path is invalid")
+    return "/".join(parts)
+
+
+def _checkout_artifacts(
+    value: Any,
+    validate_url: Callable[[str], None],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > 32:
+        raise SandboxAuthorizationError("Operation artifacts cannot contain more than 32 items")
+    artifacts: list[dict[str, Any]] = []
+    identifiers: set[str] = set()
+    filenames: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise SandboxAuthorizationError("Operation Artifact is invalid")
+        artifact_id = _required_claim(raw, "artifact_id")
+        filename = _required_claim(raw, "filename")
+        sha256 = _required_claim(raw, "sha256").lower()
+        url = _required_claim(raw, "url")
+        token = _required_claim(raw, "token")
+        size = raw.get("size")
+        max_bytes = raw.get("max_bytes")
+        if re.fullmatch(r"artifact_[a-f0-9]{32}", artifact_id) is None:
+            raise SandboxAuthorizationError("Operation artifact_id is invalid")
+        if (
+            len(filename) > 255
+            or filename in {".", ".."}
+            or "/" in filename
+            or "\\" in filename
+            or "\x00" in filename
+        ):
+            raise SandboxAuthorizationError("Operation Artifact filename is invalid")
+        if re.fullmatch(r"[a-f0-9]{64}", sha256) is None:
+            raise SandboxAuthorizationError("Operation Artifact sha256 is invalid")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise SandboxAuthorizationError("Operation Artifact size is invalid")
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or max_bytes < size
+            or max_bytes > 10 * 1024**3
+        ):
+            raise SandboxAuthorizationError("Operation Artifact max_bytes is invalid")
+        if artifact_id in identifiers or filename in filenames:
+            raise SandboxAuthorizationError("Operation Artifact ids and filenames must be unique")
+        validate_url(url)
+        identifiers.add(artifact_id)
+        filenames.add(filename)
+        artifacts.append(
+            {
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "size": size,
+                "sha256": sha256,
+                "max_bytes": max_bytes,
+                "url": url,
+                "token": token,
+            }
+        )
+    return artifacts
 
 
 def _operation_error(exc: BaseException) -> str:

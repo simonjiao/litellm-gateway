@@ -43,7 +43,11 @@ class ManagerSettings(BaseSettings):
     object_store_parent_secret_key: SecretStr | None = None
     workspace_bucket: str | None = None
     workspace_prefix: str = "repositories"
-    files_transfer_base_url: str | None = None
+    artifact_transfer_base_url: str = "http://artifact-service:8093/v1/transfers"
+    publish_spool_volume: str = "agent-publish-spool"
+    operation_container_user: str = "0:0"
+    agent_uid: int = Field(default=10001, ge=1)
+    agent_gid: int = Field(default=10001, ge=1)
     sts_duration_seconds: int = Field(default=1800, ge=900, le=43200)
     restic_password_file: Path | None = None
 
@@ -86,6 +90,8 @@ class ManagerSettings(BaseSettings):
         "workspace_prefix",
         "operation_grant_issuer",
         "state_db_path",
+        "publish_spool_volume",
+        "operation_container_user",
     )
     @classmethod
     def non_empty(cls, value: str) -> str:
@@ -119,7 +125,7 @@ class ManagerSettings(BaseSettings):
     def internal_no_proxy_names(self) -> list[str]:
         return [name.strip() for name in self.internal_no_proxy.split(",") if name.strip()]
 
-    @field_validator("object_store_endpoint", "files_transfer_base_url")
+    @field_validator("object_store_endpoint", "artifact_transfer_base_url")
     @classmethod
     def valid_object_store_url(cls, value: str | None) -> str | None:
         if value is None:

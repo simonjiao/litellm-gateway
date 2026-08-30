@@ -1,25 +1,24 @@
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
+import re
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse
-from open_webui.models.chats import Chats
-from open_webui.models.files import Files
-from open_webui.models.users import Users
-from open_webui.routers.files import upload_file_handler
-from open_webui.storage.provider import Storage
-from open_webui.utils.access_control.files import has_access_to_file
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from open_webui.utils.auth import get_verified_user
 from pydantic import BaseModel, ConfigDict, Field
 
 from sandbox_api.grants import GrantError, verify_grant
 
-from .database import consume_transfer_nonce, get_workspace
+from .database import consume_transfer_nonce
 from .settings import SETTINGS
-from .workspace import _adapter_request, _grant, require_chat_write
+from .workspace import (
+    advance_candidate,
+    artifact_download_target,
+    record_terminal_response,
+    uploaded_file_artifact,
+)
 
 router = APIRouter()
 
@@ -28,144 +27,106 @@ class ArtifactPublishForm(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     chat_id: str = Field(min_length=1, max_length=256)
-    message_id: str = Field(min_length=1, max_length=256)
+    message_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     response_id: str = Field(pattern=r"^resp_[a-f0-9]{32}$")
     workspace_path: str = Field(min_length=1, max_length=4096)
+
+
+class TerminalResponseForm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    response_id: str = Field(pattern=r"^resp_[a-f0-9]{32}$")
+    status: str = Field(pattern=r"^(completed|failed|incomplete)$")
+    output_text: str = Field(max_length=2 * 1024 * 1024)
+    grant: str = Field(min_length=16, max_length=64 * 1024)
+
+
+@router.post("/events/response-terminal")
+async def response_terminal(form: TerminalResponseForm) -> dict[str, Any]:
+    claims = await _transfer_claims(form.grant, "response_terminal")
+    intents = await record_terminal_response(
+        response_id=form.response_id,
+        response_status=form.status,
+        output_text=form.output_text,
+        claims=claims,
+    )
+    return {"accepted": True, "intent_ids": intents}
 
 
 @router.post("/artifacts/publish")
 async def publish_artifact(
     form: ArtifactPublishForm,
     user: Annotated[Any, Depends(get_verified_user)],
-):
-    await require_chat_write(form.chat_id, user)
-    message = await Chats.get_message_by_id_and_message_id(form.chat_id, form.message_id)
-    if not message or message.get("role") != "assistant":
-        raise HTTPException(status_code=404, detail="Assistant message not found")
-    workspace_id = await get_workspace(form.chat_id)
-    if workspace_id is None:
-        raise HTTPException(status_code=409, detail="Chat has no Workspace")
-    transfer_token = _grant(
-        "file_write",
-        audience="open-webui-transfer",
-        workspace_id=workspace_id,
+) -> dict[str, Any]:
+    relative_path = _candidate_relative(form.workspace_path, form.message_id)
+    return await advance_candidate(
         chat_id=form.chat_id,
-        message_id=form.message_id,
+        assistant_message_id=form.message_id,
         response_id=form.response_id,
-        user_id=user.id,
-        workspace_path=form.workspace_path,
-        max_bytes=SETTINGS.max_file_bytes,
-    )
-    operation_grant = _grant(
-        "artifact_publish",
-        workspace_id=workspace_id,
-        workspace_path=form.workspace_path,
-        max_bytes=SETTINGS.max_file_bytes,
-        transfer_url=f"{SETTINGS.internal_transfer_base_url}/publish",
-        transfer_token=transfer_token,
-        idempotency_key=(f"publish:{form.chat_id}:{form.message_id}:{form.workspace_path}"),
-    )
-    return await _adapter_request(
-        "POST",
-        "/v1/artifacts/publish",
-        json_body={"response_id": form.response_id, "grant": operation_grant},
-    )
-
-
-@router.get("/transfer/files/{file_id}")
-async def transfer_file(file_id: str, request: Request):
-    claims = await _transfer_claims(request, "file_read")
-    if claims.get("file_id") != file_id:
-        raise HTTPException(status_code=403, detail="Transfer binding does not match")
-    user, _ = await _transfer_subject(claims)
-    file = await Files.get_file_by_id(file_id)
-    if file is None or not (
-        file.user_id == user.id
-        or user.role == "admin"
-        or await has_access_to_file(file_id, "read", user)
-    ):
-        raise HTTPException(status_code=404, detail="File not found")
-    if not file.path:
-        raise HTTPException(status_code=404, detail="File content not found")
-    resolved = Path(await asyncio.to_thread(Storage.get_file, file.path))
-    file_size = await asyncio.to_thread(_regular_file_size, resolved)
-    max_bytes = claims.get("max_bytes")
-    if file_size is None or not isinstance(max_bytes, int) or file_size > max_bytes:
-        raise HTTPException(status_code=413, detail="File exceeds transfer limit")
-    return FileResponse(
-        resolved,
-        media_type=(file.meta or {}).get("content_type"),
-        filename=(file.meta or {}).get("name") or file.filename,
-    )
-
-
-@router.post("/transfer/publish")
-async def transfer_publish(
-    request: Request,
-    file: Annotated[UploadFile, File(...)],
-):
-    claims = await _transfer_claims(request, "file_write")
-    user, workspace_id = await _transfer_subject(claims)
-    message_id = _claim_string(claims, "message_id")
-    workspace_path = _claim_string(claims, "workspace_path")
-    if claims.get("workspace_id") != workspace_id:
-        raise HTTPException(status_code=403, detail="Transfer binding does not match")
-    message = await Chats.get_message_by_id_and_message_id(
-        _claim_string(claims, "chat_id"), message_id
-    )
-    if not message or message.get("role") != "assistant":
-        raise HTTPException(status_code=404, detail="Assistant message not found")
-    max_bytes = claims.get("max_bytes")
-    if not isinstance(max_bytes, int) or max_bytes <= 0:
-        raise HTTPException(status_code=403, detail="Transfer limit is invalid")
-    actual_size = file.size
-    if actual_size is None:
-        await asyncio.to_thread(file.file.seek, 0, 2)
-        actual_size = await asyncio.to_thread(file.file.tell)
-        await asyncio.to_thread(file.file.seek, 0)
-    if actual_size > max_bytes:
-        raise HTTPException(status_code=413, detail="Artifact exceeds transfer limit")
-
-    uploaded = await upload_file_handler(
-        request,
-        file,
-        metadata={"source": "sandbox", "workspace_path": workspace_path},
-        process=False,
-        process_in_background=False,
+        relative_path=relative_path,
         user=user,
-        background_tasks=None,
-        db=None,
     )
-    file_id = getattr(uploaded, "id", None)
-    if not isinstance(file_id, str):
-        raise HTTPException(status_code=502, detail="Artifact storage returned invalid data")
-    chat_id = _claim_string(claims, "chat_id")
-    filename = getattr(uploaded, "filename", None) or Path(workspace_path).name
-    download_url = f"/api/v1/files/{file_id}/content?attachment=true"
-    file_entry = {
-        "type": "file",
-        "id": file_id,
-        "name": filename,
-        "url": download_url,
-    }
-    await Chats.insert_chat_files(chat_id, message_id, [file_id], user.id)
-    attached = await Chats.add_message_files_by_id_and_message_id(chat_id, message_id, [file_entry])
-    if attached is None:
-        raise HTTPException(status_code=409, detail="Assistant message could not be updated")
-    return {
-        "file_id": file_id,
-        "filename": filename,
-        "download_url": download_url,
-    }
 
 
-async def _transfer_claims(request: Request, operation: str) -> dict[str, Any]:
-    authorization = request.headers.get("authorization", "")
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+@router.get("/artifacts/{artifact_id}/download")
+async def download_artifact(
+    artifact_id: str,
+    user: Annotated[Any, Depends(get_verified_user)],
+) -> StreamingResponse:
+    if re.fullmatch(r"artifact_[a-f0-9]{32}", artifact_id) is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    target = await artifact_download_target(artifact_id, user)
+    return await _proxy_download(target)
+
+
+async def uploaded_file_download(file_id: str, user: Any) -> StreamingResponse | None:
+    artifact_id = await uploaded_file_artifact(file_id)
+    if artifact_id is None:
+        return None
+    target = await artifact_download_target(artifact_id, user)
+    return await _proxy_download(target)
+
+
+async def _proxy_download(target: dict[str, Any]) -> StreamingResponse:
+    url = target.get("url")
+    token = target.get("token")
+    if not isinstance(url, str) or not isinstance(token, str):
+        raise HTTPException(status_code=502, detail="Artifact download target is invalid")
+    client = httpx.AsyncClient(timeout=None, trust_env=False)
+    try:
+        request = client.build_request(
+            "GET", url, headers={"Authorization": f"Bearer {token}"}
+        )
+        response = await client.send(request, stream=True)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="Artifact download failed") from exc
+
+    async def content():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    headers = {
+        name: value
+        for name in ("content-length", "content-disposition", "etag")
+        if (value := response.headers.get(name)) is not None
+    }
+    return StreamingResponse(
+        content(),
+        media_type=response.headers.get("content-type", "application/octet-stream"),
+        headers=headers,
+    )
+
+
+async def _transfer_claims(token: str, operation: str) -> dict[str, Any]:
     try:
         claims = verify_grant(
-            authorization.removeprefix("Bearer "),
+            token,
             SETTINGS.signing_secret,
             audience="open-webui-transfer",
             operation=operation,
@@ -174,30 +135,33 @@ async def _transfer_claims(request: Request, operation: str) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Transfer grant is invalid") from exc
     if claims.get("iss") != "open-webui-bff":
         raise HTTPException(status_code=403, detail="Transfer issuer is invalid")
-    if not await consume_transfer_nonce(_claim_string(claims, "nonce"), claims["exp"]):
+    nonce = claims.get("nonce")
+    expires_at = claims.get("exp")
+    if (
+        not isinstance(nonce, str)
+        or not isinstance(expires_at, int)
+        or not await consume_transfer_nonce(nonce, expires_at)
+    ):
         raise HTTPException(status_code=403, detail="Transfer grant was already used")
     return claims
 
 
-async def _transfer_subject(claims: dict[str, Any]) -> tuple[Any, str]:
-    user_id = _claim_string(claims, "user_id")
-    chat_id = _claim_string(claims, "chat_id")
-    workspace_id = _claim_string(claims, "workspace_id")
-    user = await Users.get_user_by_id(user_id)
-    if user is None:
-        raise HTTPException(status_code=403, detail="Transfer user no longer exists")
-    await require_chat_write(chat_id, user)
-    if await get_workspace(chat_id) != workspace_id:
-        raise HTTPException(status_code=403, detail="Transfer Workspace binding changed")
-    return user, workspace_id
-
-
-def _claim_string(claims: dict[str, Any], name: str) -> str:
-    value = claims.get(name)
-    if not isinstance(value, str) or not value:
-        raise HTTPException(status_code=403, detail=f"Transfer {name} is invalid")
-    return value
-
-
-def _regular_file_size(path: Path) -> int | None:
-    return path.stat().st_size if path.is_file() else None
+def _candidate_relative(value: str, assistant_message_id: str) -> str:
+    prefixes = (
+        f"sandbox:/workspace/outputs/{assistant_message_id}/",
+        f"/workspace/outputs/{assistant_message_id}/",
+        f"outputs/{assistant_message_id}/",
+    )
+    relative = next(
+        (value.removeprefix(prefix) for prefix in prefixes if value.startswith(prefix)),
+        None,
+    )
+    if relative is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Candidate path is outside the current output directory",
+        )
+    parts = relative.split("/")
+    if not relative or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=422, detail="Candidate path is invalid")
+    return relative

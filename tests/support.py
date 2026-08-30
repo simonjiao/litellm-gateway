@@ -117,7 +117,17 @@ class InProcessSandbox:
         now = int(time.time())
         operation = "publish" if "publish" in grant else "checkout"
         result = (
-            {"file_id": "file_test", "download_url": "/api/v1/files/file_test/content"}
+            {
+                "artifact": {
+                    "artifact_id": "artifact_00000000000000000000000000000000",
+                    "owner_id": "user_test",
+                    "filename": "result.txt",
+                    "media_type": "text/plain",
+                    "size": 4,
+                    "sha256": "0" * 64,
+                    "created_at": now,
+                }
+            }
             if operation == "publish"
             else {"path": "uploads/input.txt"}
         )

@@ -39,10 +39,18 @@ def main() -> int:
     operation_secret = current.get("SANDBOX_MANAGER_OPERATION_SIGNING_SECRET")
     if not operation_secret or operation_secret.startswith("replace-"):
         operation_secret = secrets.token_urlsafe(48)
+    artifact_api_key = current.get("ARTIFACT_SERVICE_API_KEY")
+    if not artifact_api_key or artifact_api_key.startswith("replace-"):
+        artifact_api_key = secrets.token_urlsafe(48)
+    artifact_capability_secret = current.get("ARTIFACT_SERVICE_CAPABILITY_SECRET")
+    if not artifact_capability_secret or artifact_capability_secret.startswith("replace-"):
+        artifact_capability_secret = secrets.token_urlsafe(48)
     updates = {
         "AGENT_OPEN_WEBUI_IMAGE": "agent-open-webui:0.3.0",
         "AGENT_STORAGE_OPS_IMAGE": "agent-storage-ops:0.3.0",
+        "AGENT_ARTIFACT_SERVICE_IMAGE": "agent-artifact-service:0.3.0",
         "AGENT_WORKSPACE_ENABLED": "true",
+        "CODEX_ADAPTER_AGENT_WORKSPACE": "/workspace/work",
         "OPEN_WEBUI_STORAGE_PROVIDER": "s3",
         "RUSTFS_ENDPOINT": endpoint,
         "RUSTFS_REGION": "us-east-1",
@@ -50,6 +58,12 @@ def main() -> int:
         "OPEN_WEBUI_S3_SECRET_ACCESS_KEY": secret_key,
         "OPEN_WEBUI_S3_BUCKET": "agent-data",
         "OPEN_WEBUI_S3_KEY_PREFIX": "open-webui/files",
+        "ARTIFACT_SERVICE_API_KEY": artifact_api_key,
+        "ARTIFACT_SERVICE_CAPABILITY_SECRET": artifact_capability_secret,
+        "ARTIFACT_S3_ACCESS_KEY_ID": access_key,
+        "ARTIFACT_S3_SECRET_ACCESS_KEY": secret_key,
+        "ARTIFACT_S3_BUCKET": "agent-data",
+        "ARTIFACT_S3_PREFIX": "artifacts",
         "WORKSPACE_S3_PARENT_ACCESS_KEY": access_key,
         "WORKSPACE_S3_PARENT_SECRET_KEY": secret_key,
         "WORKSPACE_S3_CREDENTIAL_MODE": "static",

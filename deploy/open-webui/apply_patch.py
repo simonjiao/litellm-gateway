@@ -25,6 +25,56 @@ replace_once(
 )
 
 replace_once(
+    "open_webui/routers/files.py",
+    "    result = await upload_file_handler(\n"
+    "        request,\n"
+    "        file=file,\n"
+    "        metadata=metadata,\n"
+    "        process=process,\n"
+    "        process_in_background=process_in_background,\n"
+    "        user=user,\n"
+    "        background_tasks=background_tasks,\n"
+    "        db=db,\n"
+    "    )\n\n"
+    "    if isinstance(result, dict):\n",
+    "    result = await upload_file_handler(\n"
+    "        request,\n"
+    "        file=file,\n"
+    "        metadata=metadata,\n"
+    "        process=process,\n"
+    "        process_in_background=process_in_background,\n"
+    "        user=user,\n"
+    "        background_tasks=background_tasks,\n"
+    "        db=db,\n"
+    "    )\n"
+    "    from agent_open_webui.workspace import register_uploaded_file\n\n"
+    "    await register_uploaded_file(request, user, result)\n\n"
+    "    if isinstance(result, dict):\n",
+)
+
+replace_once(
+    "open_webui/routers/files.py",
+    "async def get_file_content_by_id(\n"
+    "    id: str,\n"
+    "    user=Depends(get_verified_user),\n"
+    "    attachment: bool = Query(False),\n"
+    "    db: AsyncSession = Depends(get_async_session),\n"
+    "):\n"
+    "    file = await Files.get_file_by_id(id, db=db)\n",
+    "async def get_file_content_by_id(\n"
+    "    id: str,\n"
+    "    user=Depends(get_verified_user),\n"
+    "    attachment: bool = Query(False),\n"
+    "    db: AsyncSession = Depends(get_async_session),\n"
+    "):\n"
+    "    from agent_open_webui.router import uploaded_file_download\n\n"
+    "    artifact_response = await uploaded_file_download(id, user)\n"
+    "    if artifact_response is not None:\n"
+    "        return artifact_response\n"
+    "    file = await Files.get_file_by_id(id, db=db)\n",
+)
+
+replace_once(
     "open_webui/routers/chats.py",
     "        await Chats.delete_chat_by_id_and_user_id(child_id, chat.user_id)\n",
     "        await Chats.delete_chat_by_id_and_user_id(child_id, chat.user_id)\n"

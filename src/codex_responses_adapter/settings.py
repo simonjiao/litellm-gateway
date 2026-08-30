@@ -19,7 +19,8 @@ class Settings(BaseSettings):
 
     sandbox_manager_base_url: str = "http://sandbox-manager:8092"
     sandbox_manager_api_key: str = Field(default="local-sandbox-manager-key", min_length=8)
-    agent_workspace: str = "/workspace"
+    agent_workspace: str = "/workspace/work"
+    publish_callback_url: str | None = None
 
     codex_model: str | None = None
     codex_ephemeral_threads: bool = False
@@ -42,6 +43,16 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("publish_callback_url", mode="before")
+    @classmethod
+    def normalize_callback_url(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        normalized = str(value).strip()
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("CODEX_ADAPTER_PUBLISH_CALLBACK_URL must be an absolute URL")
+        return normalized
 
     @field_validator("mcp_apps_public_base_url")
     @classmethod

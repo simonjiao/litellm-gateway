@@ -38,6 +38,8 @@ def _run_stack(
         "SANDBOX_MANAGER_API_KEY=manager-test-key\n"
         "SANDBOX_MANAGER_WORKER_TOKEN_SECRET=worker-token-secret-at-least-32-bytes\n"
         "SANDBOX_MANAGER_OPERATION_SIGNING_SECRET=operation-secret-at-least-32-bytes\n"
+        "ARTIFACT_SERVICE_API_KEY=artifact-api-key-at-least-32-bytes\n"
+        "ARTIFACT_SERVICE_CAPABILITY_SECRET=artifact-capability-secret-at-least-32-bytes\n"
         f"SANDBOX_MANAGER_CODEX_AUTH_SOURCE_FILE={auth_file}\n"
         f"SANDBOX_MANAGER_DOCKER_SOCKET={fake_socket}\n"
         f"{extra_env}"

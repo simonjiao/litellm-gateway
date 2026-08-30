@@ -16,6 +16,7 @@ WorkspaceStatus = Literal[
     "deleting",
 ]
 OperationStatus = Literal["pending", "running", "succeeded", "failed"]
+OperationPhase = Literal["capturing", "captured", "uploading"]
 
 
 class SandboxCreateRequest(BaseModel):
@@ -63,6 +64,7 @@ class OperationInfo(BaseModel):
     id: str
     operation: str
     status: OperationStatus
+    phase: OperationPhase | None = None
     workspace_id: str
     sandbox_id: str | None
     result: dict[str, Any] | None

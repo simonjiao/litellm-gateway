@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 codex-responses-adapter = "codex_responses_adapter.cli:main"
+artifact-service = "artifact_service.cli:main"
 sandbox-manager = "sandbox_manager.cli:main"
 sandbox-worker = "sandbox_worker.cli:main"
 
@@ -35,6 +36,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = [
+  "src/artifact_service",
   "src/codex_responses_adapter",
   "src/sandbox_api",
   "src/sandbox_manager",

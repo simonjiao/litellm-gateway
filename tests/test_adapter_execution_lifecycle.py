@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -135,7 +134,7 @@ async def test_workspace_grants_are_relayed_but_never_stored_in_response_metadat
                 metadata={
                     "visible": "yes",
                     "agent_workspace_grant": create_grant,
-                    "agent_checkout_grants": json.dumps([checkout_grant]),
+                    "agent_checkout_grant": checkout_grant,
                 },
             )
         )

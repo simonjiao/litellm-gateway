@@ -124,7 +124,11 @@ async def test_workspace_and_artifact_control_routes_relay_signed_grants(
                 },
             )
             assert published.status_code == 200
-            assert published.json()["file_id"] == "file_test"
+            assert published.json()["operation"] == "publish"
+            assert published.json()["status"] == "succeeded"
+            assert published.json()["result"]["artifact"]["artifact_id"] == (
+                "artifact_00000000000000000000000000000000"
+            )
 
 
 @pytest.mark.asyncio

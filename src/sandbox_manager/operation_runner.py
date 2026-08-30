@@ -98,61 +98,103 @@ class DockerOperationRunner:
         operation_id: str,
         workspace: WorkspaceRecord,
         *,
-        destination: str,
-        url: str,
-        token: str,
-        max_bytes: int,
-        sha256: str | None,
+        user_message_id: str,
+        assistant_message_id: str,
+        artifacts: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        command = [
-            "checkout",
-            "--destination",
-            destination,
-            "--url",
-            url,
-            "--token",
-            token,
-            "--max-bytes",
-            str(max_bytes),
-        ]
-        if sha256 is not None:
-            command.extend(["--sha256", sha256])
         return await self._run(
             operation_id,
             "artifact-checkout",
             workspace,
-            command,
+            [
+                "checkout-batch",
+                "--operation-id",
+                operation_id,
+                "--user-message-id",
+                user_message_id,
+                "--assistant-message-id",
+                assistant_message_id,
+                "--artifacts",
+                json.dumps(artifacts, sort_keys=True, separators=(",", ":")),
+                "--agent-uid",
+                str(self._settings.agent_uid),
+                "--agent-gid",
+                str(self._settings.agent_gid),
+            ],
             mount_path="/workspace",
             mount_mode="rw",
         )
 
-    async def publish(
+    async def prepare(self, workspace: WorkspaceRecord) -> dict[str, Any]:
+        return await self._run(
+            f"prepare_{workspace.id.removeprefix('workspace_')}",
+            "workspace-prepare",
+            workspace,
+            [
+                "prepare",
+                "--agent-uid",
+                str(self._settings.agent_uid),
+                "--agent-gid",
+                str(self._settings.agent_gid),
+            ],
+            mount_path="/workspace",
+            mount_mode="rw",
+        )
+
+    async def capture(
         self,
         operation_id: str,
         workspace: WorkspaceRecord,
         *,
         source: str,
-        url: str,
-        token: str,
         max_bytes: int,
     ) -> dict[str, Any]:
         return await self._run(
             operation_id,
-            "artifact-publish",
+            "artifact-capture",
             workspace,
             [
-                "publish",
+                "capture",
+                "--operation-id",
+                operation_id,
                 "--source",
                 source,
-                "--url",
-                url,
-                "--token",
-                token,
                 "--max-bytes",
                 str(max_bytes),
             ],
             mount_path="/workspace",
             mount_mode="ro",
+            extra_volumes={
+                self._settings.publish_spool_volume: {"bind": "/spool", "mode": "rw"}
+            },
+        )
+
+    async def upload_capture(
+        self,
+        operation_id: str,
+        workspace: WorkspaceRecord,
+        *,
+        url: str,
+        token: str,
+    ) -> dict[str, Any]:
+        return await self._run(
+            operation_id,
+            "artifact-upload",
+            workspace,
+            [
+                "upload-capture",
+                "--operation-id",
+                operation_id,
+                "--url",
+                url,
+                "--token",
+                token,
+            ],
+            mount_path=None,
+            mount_mode="ro",
+            extra_volumes={
+                self._settings.publish_spool_volume: {"bind": "/spool", "mode": "rw"}
+            },
         )
 
     async def _repository_access(
@@ -236,9 +278,16 @@ class DockerOperationRunner:
             },
             "privileged": False,
             "cap_drop": ["ALL"],
+            "cap_add": (
+                ["DAC_READ_SEARCH"]
+                if role == "artifact-capture"
+                else ["CHOWN"]
+                if role in {"workspace-prepare", "artifact-checkout"}
+                else []
+            ),
             "security_opt": ["no-new-privileges:true"],
             "read_only": True,
-            "user": self._settings.container_user,
+            "user": self._settings.operation_container_user,
             "mem_limit": "512m",
             "nano_cpus": 1_000_000_000,
             "pids_limit": 128,

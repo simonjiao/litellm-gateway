@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
-from sandbox_manager.models import WorkspaceInfo
+from sandbox_manager.models import OperationInfo, WorkspaceInfo
 
 from .csp import render_mcp_resource
 from .errors import AdapterError
@@ -201,13 +201,21 @@ def create_app(
         service: CodexResponsesService = request.app.state.service
         return await service.release_workspace(workspace_id, body.grant)
 
-    @app.post("/v1/artifacts/publish")
+    @app.post("/v1/artifacts/publish", response_model=OperationInfo)
     async def publish_artifact(
         body: ArtifactPublishRequest,
         request: Request,
-    ) -> dict[str, Any]:
+    ) -> OperationInfo:
         service: CodexResponsesService = request.app.state.service
         return await service.publish_artifact(body.response_id, body.grant)
+
+    @app.get("/v1/artifacts/operations/{operation_id}", response_model=OperationInfo)
+    async def inspect_artifact_operation(
+        operation_id: str,
+        request: Request,
+    ) -> OperationInfo:
+        service: CodexResponsesService = request.app.state.service
+        return await service.inspect_artifact_operation(operation_id)
 
     @app.get("/v1/mcp-apps/responses/{response_id}/state")
     async def mcp_app_state(response_id: str, request: Request) -> dict[str, Any]:

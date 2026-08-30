@@ -11,12 +11,19 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     services = compose["services"]
 
     assert compose["name"] == "agent"
-    assert set(services) == {"open-webui", "gateway", "adapter", "sandbox-manager"}
+    assert set(services) == {
+        "open-webui",
+        "artifact-service",
+        "gateway",
+        "adapter",
+        "sandbox-manager",
+    }
     assert compose["networks"]["control"]["name"] == "${CONTROL_NETWORK:-agent-control}"
     gateway = services["gateway"]
     adapter = services["adapter"]
     manager = services["sandbox-manager"]
     webui = services["open-webui"]
+    artifact = services["artifact-service"]
 
     common_runtime = compose["x-common-runtime"]
     assert not {"build", "image", "command", "restart"} & common_runtime.keys()
@@ -24,17 +31,23 @@ def test_compose_deploys_services_as_separate_runc_images() -> None:
     assert adapter["build"]["dockerfile"] == "deploy/responses-adapter/Dockerfile"
     assert manager["build"]["dockerfile"] == "deploy/sandbox-manager/Dockerfile"
     assert webui["build"]["dockerfile"] == "deploy/open-webui/Dockerfile"
+    assert artifact["build"]["dockerfile"] == "deploy/artifact-service/Dockerfile"
     assert gateway["image"] == "${AGENT_GATEWAY_IMAGE:-agent-gateway:0.3.0}"
     assert adapter["image"] == "${AGENT_ADAPTER_IMAGE:-agent-adapter:0.3.0}"
     assert manager["image"] == "${AGENT_SANDBOX_MANAGER_IMAGE:-agent-sandbox-manager:0.3.0}"
+    assert artifact["image"] == (
+        "${AGENT_ARTIFACT_SERVICE_IMAGE:-agent-artifact-service:0.3.0}"
+    )
 
     assert gateway["runtime"] == "runc"
     assert adapter["runtime"] == "runc"
     assert manager["runtime"] == "runc"
+    assert artifact["runtime"] == "runc"
     assert manager["restart"] == "unless-stopped"
     assert set(gateway["networks"]) == {"control"}
     assert set(adapter["networks"]) == {"control", "agent-rpc"}
     assert set(manager["networks"]) == {"control", "storage"}
+    assert set(artifact["networks"]) == {"control", "storage"}
     assert "ports" in gateway
     assert "ports" not in adapter
     assert "ports" not in manager
@@ -84,8 +97,8 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
         "${OPEN_WEBUI_SECRET_KEY:?set OPEN_WEBUI_SECRET_KEY}"
     )
     assert webui["environment"]["AGENT_ADAPTER_BASE_URL"] == "http://adapter:8090"
-    assert webui["environment"]["AGENT_INTERNAL_TRANSFER_BASE_URL"] == (
-        "http://open-webui:8080/api/agent/transfer"
+    assert webui["environment"]["AGENT_ARTIFACT_BASE_URL"] == (
+        "http://artifact-service:8093"
     )
     assert webui["environment"]["S3_ADDRESSING_STYLE"] == "path"
     assert webui["depends_on"]["gateway"]["condition"] == "service_healthy"

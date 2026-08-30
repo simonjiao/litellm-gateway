@@ -21,6 +21,8 @@ source scripts/lib/internal-services.sh
 : "${SANDBOX_MANAGER_WORKER_TOKEN_SECRET:?SANDBOX_MANAGER_WORKER_TOKEN_SECRET is required}"
 : "${SANDBOX_MANAGER_OPERATION_SIGNING_SECRET:?SANDBOX_MANAGER_OPERATION_SIGNING_SECRET is required}"
 : "${OPEN_WEBUI_SECRET_KEY:?OPEN_WEBUI_SECRET_KEY is required}"
+: "${ARTIFACT_SERVICE_API_KEY:?ARTIFACT_SERVICE_API_KEY is required}"
+: "${ARTIFACT_SERVICE_CAPABILITY_SECRET:?ARTIFACT_SERVICE_CAPABILITY_SECRET is required}"
 
 project_root="$(pwd)"
 runtime_root="${project_root}/.runtime"
@@ -68,6 +70,8 @@ if [[ "${storage_enabled,,}" == "true" ]]; then
   : "${OPEN_WEBUI_S3_SECRET_ACCESS_KEY:?OPEN_WEBUI_S3_SECRET_ACCESS_KEY is required}"
   : "${WORKSPACE_S3_PARENT_ACCESS_KEY:?WORKSPACE_S3_PARENT_ACCESS_KEY is required}"
   : "${WORKSPACE_S3_PARENT_SECRET_KEY:?WORKSPACE_S3_PARENT_SECRET_KEY is required}"
+  : "${ARTIFACT_S3_ACCESS_KEY_ID:?ARTIFACT_S3_ACCESS_KEY_ID is required}"
+  : "${ARTIFACT_S3_SECRET_ACCESS_KEY:?ARTIFACT_S3_SECRET_ACCESS_KEY is required}"
   restic_password_file="${secret_dir}/restic-password"
   if [[ ! -r "${restic_password_file}" ]]; then
     umask 077
@@ -112,7 +116,7 @@ bash scripts/build-network-policy.sh
 if [[ "${storage_enabled,,}" == "true" ]]; then
   bash scripts/build-storage-ops.sh
 fi
-docker compose build open-webui gateway adapter sandbox-manager
+docker compose build open-webui artifact-service gateway adapter sandbox-manager
 
 stop_entry_workloads_on_error() {
   docker compose stop open-webui gateway adapter >/dev/null 2>&1 || true
@@ -129,7 +133,7 @@ if [[ ! -r "${resolv_conf_file}" ]]; then
 fi
 
 docker compose up --detach --wait --wait-timeout 120 --force-recreate \
-  sandbox-manager adapter
+  artifact-service sandbox-manager adapter
 bash scripts/apply-agent-rpc-policy.sh
 bash scripts/apply-agent-egress-policy.sh
 docker compose up --detach --wait --wait-timeout 120 --force-recreate --no-deps \
@@ -138,4 +142,4 @@ docker compose up --detach --wait --wait-timeout 180 --force-recreate --no-deps 
   open-webui
 trap - ERR
 
-echo "Open WebUI, Gateway, Responses Adapter, Sandbox Manager, Agent DNS, and policy egress are ready."
+echo "Open WebUI, Artifact Service, Gateway, Adapter, Sandbox Manager, DNS, and policy egress are ready."

@@ -61,11 +61,12 @@ Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用�
 该 ID 不进入 Workspace 路径或文件授权；其他 Agent Runtime 可以使用各自的执行 ID，而不改变
 文件接口。
 
-同源 BFF 在 Responses metadata 中注入两个保留字段：`agent_workspace_grant` 授权 Workspace
-创建或恢复，`agent_checkout_grants` 携带当前消息的 checkout 授权列表；有 checkout 时前者必需。
-Adapter 在建立 `ResponseRecord` 前移除并消费两者，只将授权转交 Manager，不在响应、日志或
-事件中返回。没有 Workspace 授权的新 Sandbox 使用临时 Workspace；签名无效、过期或绑定不匹配
-时在创建 Sandbox 前拒绝。`previous_response_id` 必须继续绑定原 Workspace，不能通过新授权切换。
+同源 BFF 在 Responses metadata 中注入三个保留字段：`agent_workspace_grant` 授权 Workspace
+创建或恢复，`agent_checkout_grant` 授权当前消息的批次 checkout，`agent_publish_grant` 授权回传
+终态事件。Adapter 在建立 `ResponseRecord` 前移除并消费这些字段，只向对应控制接口转交授权，
+不在响应、日志或事件中返回。没有 Workspace 授权的新 Sandbox 使用临时 Workspace；签名无效、
+过期或绑定不匹配时在创建 Sandbox 前拒绝。`previous_response_id` 必须继续绑定原 Workspace，不能
+通过新授权切换。
 
 ## 请求映射
 
@@ -76,7 +77,7 @@ Adapter 在建立 `ResponseRecord` 前移除并消费两者，只将授权转交
 | input_image URL | `UserInput.Image` | 透传 URL 与 detail |
 | function_call_output | `UserInput.Text` | 带 call ID 的文本输入，不实现函数工具循环 |
 | `instructions` | `developerInstructions` | thread start/fork |
-| `metadata` | ResponseRecord | 保存公开字段；移除并消费 `agent_workspace_grant`、`agent_checkout_grants` |
+| `metadata` | ResponseRecord | 保存公开字段；移除并消费三个 `agent_*_grant` 保留字段 |
 | `reasoning.effort/summary` | turn start | 透传 |
 | `service_tier` | Thread/Turn `serviceTier` | 透传 |
 | `previous_response_id` | `thread/fork` | 使用前一 Thread/Turn 与同一 Agent Session |
