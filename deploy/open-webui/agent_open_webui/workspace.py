@@ -32,6 +32,7 @@ from .database import (
     get_candidate_intent,
     get_file_artifact,
     get_publish_intent,
+    get_response_binding,
     get_workspace,
     insert_workspace,
     put_file_artifact,
@@ -102,10 +103,35 @@ async def inject_workspace_context(
     assistant = await Chats.get_message_by_id_and_message_id(chat_id, str(assistant_message_id))
     if assistant is not None and assistant.get("role") != "assistant":
         raise HTTPException(status_code=409, detail="Assistant message binding is invalid")
-    workspace_id = await ensure_chat_workspace(chat_id)
+    existing_workspace_id = await get_workspace(chat_id)
+    workspace_id = existing_workspace_id or await ensure_chat_workspace(chat_id)
     await _await_capture_barriers(workspace_id)
 
     previous_response_id = payload.get("previous_response_id")
+    if not previous_response_id:
+        user_message = metadata.get("user_message")
+        parent_message_id = (
+            user_message.get("parentId") if isinstance(user_message, dict) else None
+        )
+        if _valid_message_id(parent_message_id):
+            await _require_message(chat_id, str(parent_message_id), "assistant")
+            binding = await get_response_binding(chat_id, str(parent_message_id))
+            if binding is None and existing_workspace_id is not None:
+                binding = await _await_response_binding(chat_id, str(parent_message_id))
+            if binding is not None:
+                if (
+                    binding["workspace_id"] != workspace_id
+                    or binding["owner_user_id"] != user.id
+                ):
+                    raise HTTPException(
+                        status_code=409, detail="Previous Response binding changed"
+                    )
+                previous_response_id = binding["response_id"]
+                payload["previous_response_id"] = previous_response_id
+            elif existing_workspace_id is not None:
+                raise HTTPException(
+                    status_code=409, detail="Previous Response binding is not ready"
+                )
     if previous_response_id:
         workspace_grant = _grant("workspace_inspect", workspace_id=workspace_id)
         sandbox_id = None
@@ -710,6 +736,18 @@ async def _await_capture_barriers(workspace_id: str) -> None:
         if asyncio.get_running_loop().time() >= deadline:
             raise HTTPException(status_code=503, detail="Previous Artifact capture did not finish")
         await asyncio.sleep(0.1)
+
+
+async def _await_response_binding(
+    chat_id: str, assistant_message_id: str
+) -> dict[str, str] | None:
+    deadline = asyncio.get_running_loop().time() + 30
+    while asyncio.get_running_loop().time() < deadline:
+        binding = await get_response_binding(chat_id, assistant_message_id)
+        if binding is not None:
+            return binding
+        await asyncio.sleep(0.1)
+    return None
 
 
 async def _publish_reconciler() -> None:

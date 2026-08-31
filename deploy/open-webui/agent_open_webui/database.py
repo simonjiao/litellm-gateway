@@ -283,6 +283,20 @@ async def put_response_binding(
         await session.commit()
 
 
+async def get_response_binding(
+    chat_id: str, assistant_message_id: str
+) -> dict[str, str] | None:
+    async with AsyncSessionLocal() as session:
+        binding = await session.get(ResponseBinding, assistant_message_id)
+        if binding is None or binding.chat_id != chat_id:
+            return None
+        return {
+            "response_id": str(binding.response_id),
+            "workspace_id": str(binding.workspace_id),
+            "owner_user_id": str(binding.owner_user_id),
+        }
+
+
 async def create_publish_intent(
     *,
     chat_id: str,
