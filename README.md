@@ -53,3 +53,6 @@ npm --prefix frontend/mcp-apps-host run build
 
 Docker 参考部署启动后，Open WebUI 默认位于 `http://127.0.0.1:3000`；可在聊天输入区
 选择 Gateway 发布的模型。首次注册的用户成为管理员。
+
+部署后清除浏览器缓存并重新加载。附件验收同时覆盖实际内部地址和外部域名：上传、卡片与
+正文链接下载、刷新后下载，并校验文件大小与 SHA-256。

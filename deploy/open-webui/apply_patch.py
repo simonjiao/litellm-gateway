@@ -16,6 +16,17 @@ def replace_once(relative: str, old: str, new: str) -> None:
 
 
 replace_once(
+    "open_webui/main.py",
+    "class SPAStaticFiles(StaticFiles):\n",
+    "class SPAStaticFiles(StaticFiles):\n"
+    "    def file_response(self, full_path, stat_result, scope, status_code=200):\n"
+    "        response = super().file_response(full_path, stat_result, scope, status_code)\n"
+    "        if str(full_path).endswith(('/index.html', '/_app/version.json')):\n"
+    "            response.headers['Cache-Control'] = 'no-cache'\n"
+    "        return response\n\n",
+)
+
+replace_once(
     "open_webui/routers/openai.py",
     "    requested_model = payload.get('model')\n",
     "    if is_responses:\n"
