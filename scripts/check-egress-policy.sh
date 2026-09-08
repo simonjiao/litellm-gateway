@@ -9,6 +9,8 @@ if [[ -f .env ]]; then
   set +a
 fi
 
+source scripts/lib/network-addresses.sh
+
 sandbox_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 proxy_url="${SANDBOX_MANAGER_EGRESS_PROXY_URL:-http://egress-proxy:3128}"
 worker_image="${SANDBOX_IMAGE:-codex-sandbox-worker:0.3.0}"
@@ -35,6 +37,7 @@ if [[ -z "${dns_server}" ]]; then
   echo "Agent DNS '${dns_container}' is not attached to '${sandbox_network}'." >&2
   exit 1
 fi
+network_address_expect "DNS" "${dns_server}" "${SANDBOX_AGENT_DNS_IP}"
 if [[ ! -r "${resolv_conf_file}" ]] \
   || ! grep -Fxq "nameserver ${dns_server}" "${resolv_conf_file}"; then
   echo "Agent DNS resolver file is missing or stale; run run-agent-dns.sh again." >&2

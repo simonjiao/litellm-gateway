@@ -2,6 +2,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+skip_build=false
+if [[ "${1:-}" == "--no-build" && "$#" == "1" ]]; then
+  skip_build=true
+elif [[ "$#" != "0" ]]; then
+  echo "Usage: bash scripts/run-stack.sh [--no-build]" >&2
+  exit 1
+fi
+
 if [[ ! -f .env ]]; then
   echo ".env is required; copy .env.example and configure deployment credentials first." >&2
   exit 1
@@ -14,6 +22,7 @@ set +a
 
 # shellcheck source=scripts/lib/internal-services.sh
 source scripts/lib/internal-services.sh
+source scripts/lib/network-addresses.sh
 
 : "${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}"
 : "${CODEX_ADAPTER_API_KEY:?CODEX_ADAPTER_API_KEY is required}"
@@ -109,14 +118,16 @@ else
 fi
 
 bash scripts/prepare-sandbox-network.sh
-bash scripts/build-sandbox-worker.sh
-bash scripts/build-egress-proxy.sh
-bash scripts/build-agent-dns.sh
-bash scripts/build-network-policy.sh
-if [[ "${storage_enabled,,}" == "true" ]]; then
-  bash scripts/build-storage-ops.sh
+if [[ "${skip_build}" != "true" ]]; then
+  bash scripts/build-sandbox-worker.sh
+  bash scripts/build-egress-proxy.sh
+  bash scripts/build-agent-dns.sh
+  bash scripts/build-network-policy.sh
+  if [[ "${storage_enabled,,}" == "true" ]]; then
+    bash scripts/build-storage-ops.sh
+  fi
+  docker compose build open-webui artifact-service gateway adapter sandbox-manager
 fi
-docker compose build open-webui artifact-service gateway adapter sandbox-manager
 
 stop_entry_workloads_on_error() {
   docker compose stop open-webui gateway adapter >/dev/null 2>&1 || true
@@ -136,6 +147,7 @@ docker compose up --detach --wait --wait-timeout 120 --force-recreate \
   artifact-service sandbox-manager adapter
 bash scripts/apply-agent-rpc-policy.sh
 bash scripts/apply-agent-egress-policy.sh
+bash scripts/check-egress-policy.sh
 docker compose up --detach --wait --wait-timeout 120 --force-recreate --no-deps \
   gateway
 docker compose up --detach --wait --wait-timeout 180 --force-recreate --no-deps \

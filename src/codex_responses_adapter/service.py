@@ -519,52 +519,64 @@ class CodexResponsesService:
             asyncio.get_running_loop().time() + self._settings.request_timeout_seconds
         )
         try:
-            while not builder.terminal:
-                try:
-                    async for event in self._sandbox.events(
-                        active.sandbox_id, after=active.event_cursor
-                    ):
+            async with asyncio.timeout_at(reconnect_deadline):
+                while not builder.terminal:
+                    try:
+                        async for event in self._sandbox.events(
+                            active.sandbox_id, after=active.event_cursor
+                        ):
+                            if active.lease_error is not None:
+                                raise active.lease_error
+                            if event.id > active.event_cursor + 1:
+                                raise _TerminalAgentExecutionError(
+                                    "Sandbox worker event history has a gap"
+                                )
+                            if event.type == "server_request":
+                                await self._handle_agent_server_request(prepared, event)
+                            elif event.type == "session_failed":
+                                raise _TerminalAgentExecutionError(
+                                    str(
+                                        event.data.get("message") or "Sandbox worker session failed"
+                                    )
+                                )
+                            else:
+                                notification = event.data
+                                if _belongs_to_execution(notification, active):
+                                    response_events = builder.consume(notification)
+                                    await self._publish_response_events(prepared, response_events)
+                            active.event_cursor = event.id
+                            if builder.terminal:
+                                return
+                        raise UpstreamProtocolError(
+                            "Sandbox Worker event stream ended before the turn completed"
+                        )
+                    except _TerminalAgentExecutionError:
+                        raise
+                    except UpstreamProtocolError:
                         if active.lease_error is not None:
-                            raise active.lease_error
-                        if event.id > active.event_cursor + 1:
-                            raise _TerminalAgentExecutionError(
-                                "Sandbox worker event history has a gap"
-                            )
-                        if event.type == "server_request":
-                            await self._handle_agent_server_request(prepared, event)
-                        elif event.type == "session_failed":
-                            raise _TerminalAgentExecutionError(
-                                str(event.data.get("message") or "Sandbox worker session failed")
-                            )
-                        else:
-                            notification = event.data
-                            if _belongs_to_execution(notification, active):
-                                response_events = builder.consume(notification)
-                                await self._publish_response_events(prepared, response_events)
-                        active.event_cursor = event.id
-                        if builder.terminal:
-                            return
-                    raise UpstreamProtocolError(
-                        "Sandbox Worker event stream ended before the turn completed"
-                    )
-                except _TerminalAgentExecutionError:
-                    raise
-                except UpstreamProtocolError:
-                    if active.lease_error is not None:
-                        raise active.lease_error from None
-                    if (
-                        active.cancel_requested
-                        or asyncio.get_running_loop().time() >= reconnect_deadline
-                    ):
-                        raise
-                    sandbox = await self._sandbox.inspect_sandbox(active.sandbox_id)
-                    if sandbox.status != "running" or sandbox.worker is None:
-                        raise
-                    await self._sandbox.renew_sandbox(active.sandbox_id)
-                    await asyncio.sleep(0.05)
+                            raise active.lease_error from None
+                        if (
+                            active.cancel_requested
+                            or asyncio.get_running_loop().time() >= reconnect_deadline
+                        ):
+                            raise
+                        sandbox = await self._sandbox.inspect_sandbox(active.sandbox_id)
+                        if sandbox.status != "running" or sandbox.worker is None:
+                            raise
+                        await self._sandbox.renew_sandbox(active.sandbox_id)
+                        await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                exc = UpstreamProtocolError("Agent execution timed out")
+                with suppress(Exception):
+                    async with asyncio.timeout(5):
+                        await self._sandbox.rpc(
+                            active.sandbox_id,
+                            "turn/interrupt",
+                            {"threadId": active.thread_id, "turnId": active.turn_id},
+                        )
             active.driver_error = exc
             if active.cancel_requested:
                 events = builder.incomplete("cancelled")

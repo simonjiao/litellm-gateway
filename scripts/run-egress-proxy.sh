@@ -9,6 +9,8 @@ if [[ -f .env ]]; then
   set +a
 fi
 
+source scripts/lib/network-addresses.sh
+
 managed_label="io.litellm-codex-gateway.component"
 managed_value="egress-proxy"
 sandbox_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
@@ -198,6 +200,7 @@ proxy_created=true
 # Keep the non-internal uplink as the default route while exposing only the
 # network-scoped alias to Agent sandboxes.
 docker network connect \
+  --ip "${SANDBOX_EGRESS_PROXY_IP}" \
   --alias "${proxy_alias}" \
   --gw-priority -1 \
   "${sandbox_network}" \

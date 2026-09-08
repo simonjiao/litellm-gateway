@@ -65,6 +65,8 @@ class ResponsesEventBuilder:
             return self._complete_turn(turn if isinstance(turn, dict) else {})
 
         if method in {"error", "turn/error"}:
+            if params.get("willRetry") is True:
+                return []
             message = _error_message(params)
             return self.fail(message)
 

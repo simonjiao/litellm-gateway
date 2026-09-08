@@ -292,6 +292,18 @@ def main() -> None:
                 }
             )
             prompt = text_from_input(params).lower()
+            if "retry then" in prompt:
+                send(
+                    {
+                        "method": "error",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "willRetry": True,
+                            "error": {"message": "Reconnecting... 2/5"},
+                        },
+                    }
+                )
             if "wait until cancelled" in prompt:
                 pending_cancel = {"thread_id": thread_id, "turn_id": turn_id}
                 continue

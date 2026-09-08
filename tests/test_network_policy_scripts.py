@@ -36,6 +36,9 @@ def _policy_project(
         "SANDBOX_MANAGER_EGRESS_NETWORK=agent-egress\n"
         "SANDBOX_MANAGER_WORKER_PORT=8091\n"
         "AGENT_NETWORK_POLICY_IMAGE=network-policy:test\n"
+        "SANDBOX_ADAPTER_RPC_IP=172.30.0.2\n"
+        "SANDBOX_AGENT_DNS_IP=172.30.0.3\n"
+        "SANDBOX_EGRESS_PROXY_IP=172.30.0.4\n"
         f"{extra_env}"
     )
 
@@ -94,9 +97,7 @@ exit 0
 def _run_policy_script(
     tmp_path: Path, script_name: str, *, extra_env: str = ""
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
-    project, iptables_log, env = _policy_project(
-        tmp_path, script_name, extra_env=extra_env
-    )
+    project, iptables_log, env = _policy_project(tmp_path, script_name, extra_env=extra_env)
     result = subprocess.run(
         ["/bin/bash", f"scripts/{script_name}"],
         cwd=project,
@@ -123,10 +124,24 @@ def test_rpc_policy_blocks_agent_ingress_to_other_networks_and_the_host(
     ]
     assert forward_hooks
     assert all("-o" not in command for command in forward_hooks)
-    assert any(
-        "INPUT" in command and "-i" in command and "-j" in command
-        for command in commands
-    )
+    assert any("INPUT" in command and "-i" in command and "-j" in command for command in commands)
+
+
+@pytest.mark.parametrize(
+    "script, override",
+    [
+        ("apply-agent-rpc-policy.sh", "SANDBOX_ADAPTER_RPC_IP=172.30.0.99\n"),
+        ("apply-agent-egress-policy.sh", "SANDBOX_AGENT_DNS_IP=172.30.0.99\n"),
+        ("apply-agent-egress-policy.sh", "SANDBOX_EGRESS_PROXY_IP=172.30.0.99\n"),
+    ],
+)
+def test_changed_infrastructure_address_is_rejected_before_changing_rules(
+    tmp_path: Path, script: str, override: str
+) -> None:
+    result, commands = _run_policy_script(tmp_path, script, extra_env=override)
+    assert result.returncode != 0
+    assert "does not match configured" in result.stderr
+    assert commands == []
 
 
 def test_egress_policy_blocks_agent_ingress_to_other_networks_and_the_host(
@@ -142,10 +157,7 @@ def test_egress_policy_blocks_agent_ingress_to_other_networks_and_the_host(
     ]
     assert forward_hooks
     assert all("-o" not in command for command in forward_hooks)
-    assert any(
-        "INPUT" in command and "-i" in command and "-j" in command
-        for command in commands
-    )
+    assert any("INPUT" in command and "-i" in command and "-j" in command for command in commands)
 
 
 def test_egress_policy_validates_every_destination_before_mutating_firewall(
@@ -242,9 +254,7 @@ def test_egress_policy_prevents_known_non_worker_services_from_initiating(
 
     assert result.returncode == 0, result.stderr
     source_drops = [
-        command
-        for command in commands
-        if "-s" in command and command[-2:] == ["-j", "DROP"]
+        command for command in commands if "-s" in command and command[-2:] == ["-j", "DROP"]
     ]
     assert any("172.30.0.3/32" in command for command in source_drops)
     assert any("172.30.0.4/32" in command for command in source_drops)

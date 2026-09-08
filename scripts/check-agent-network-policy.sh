@@ -77,10 +77,18 @@ network_gateway() {
 
 adapter_container="$(service_container adapter)"
 manager_container="$(service_container sandbox-manager)"
-gateway_container="$(service_container gateway)"
 adapter_address="$(container_address "${adapter_container}" "${rpc_network}")"
 manager_address="$(container_address "${manager_container}" "${control_network}")"
-gateway_address="$(container_address "${gateway_container}" "${control_network}")"
+# Deployment checks run before Gateway is started. Probe its container address
+# as well when it is already running; control and host denials are always tested.
+gateway_probe_args=()
+gateway_container="${COMPOSE_PROJECT_NAME:-agent}-gateway-1"
+gateway_address="$(docker container inspect \
+  --format "{{if .State.Running}}{{with index .NetworkSettings.Networks \"${control_network}\"}}{{.IPAddress}}{{end}}{{end}}" \
+  "${gateway_container}" 2>/dev/null || true)"
+if [[ -n "${gateway_address}" ]]; then
+  gateway_probe_args=(--denied-target "gateway=${gateway_address}:4000")
+fi
 rpc_gateway="$(network_gateway "${rpc_network}")"
 egress_gateway="$(network_gateway "${egress_network}")"
 public_address="$(
@@ -135,7 +143,7 @@ fi
 docker container exec "${probe_container}" python3 /opt/agent-network-smoke.py \
   --denied-target "adapter=${adapter_address}:8090" \
   --denied-target "manager=${manager_address}:8092" \
-  --denied-target "gateway=${gateway_address}:4000" \
+  "${gateway_probe_args[@]}" \
   --denied-target "rpc-host=${rpc_gateway}:${gateway_host_port}" \
   --denied-target "egress-host=${egress_gateway}:${gateway_host_port}" \
   --denied-target "internet=${public_address}:443"

@@ -13,6 +13,7 @@ fi
 source scripts/lib/network-policy.sh
 # shellcheck source=scripts/lib/internal-services.sh
 source scripts/lib/internal-services.sh
+source scripts/lib/network-addresses.sh
 
 egress_network="${SANDBOX_MANAGER_EGRESS_NETWORK:-agent-egress}"
 dns_container="${SANDBOX_AGENT_DNS_CONTAINER:-agent-dns}"
@@ -44,6 +45,8 @@ container_address() {
 
 dns_address="$(container_address "${dns_container}")"
 proxy_address="$(container_address "${proxy_container}")"
+network_address_expect "DNS" "${dns_address}" "${SANDBOX_AGENT_DNS_IP}"
+network_address_expect "Proxy" "${proxy_address}" "${SANDBOX_EGRESS_PROXY_IP}"
 bridge_name="$(network_policy_bridge_name "${egress_network}")"
 
 internal_service_addresses=()

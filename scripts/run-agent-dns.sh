@@ -11,6 +11,7 @@ fi
 
 # shellcheck source=scripts/lib/internal-services.sh
 source scripts/lib/internal-services.sh
+source scripts/lib/network-addresses.sh
 
 managed_label="io.litellm-codex-gateway.component"
 managed_value="agent-dns"
@@ -85,6 +86,9 @@ for record in "${records[@]}"; do
     echo "Internal service '${container_name}' is not attached to '${sandbox_network}'." >&2
     exit 1
   fi
+  if [[ "${container_name}" == "${proxy_container}" ]]; then
+    network_address_expect "Proxy" "${service_address}" "${SANDBOX_EGRESS_PROXY_IP}"
+  fi
   printf '%s %s\n' "${service_address}" "${dns_name}" >>"${temporary_hosts}"
 done
 
@@ -111,6 +115,7 @@ docker run --detach \
   --label "${managed_label}=${managed_value}" \
   --runtime runc \
   --network "${sandbox_network}" \
+  --ip "${SANDBOX_AGENT_DNS_IP}" \
   --network-alias "${dns_container}" \
   --restart unless-stopped \
   --read-only \
@@ -140,12 +145,17 @@ write_resolv_conf() {
     echo "Agent DNS '${dns_container}' has no address on '${sandbox_network}'." >&2
     return 1
   fi
+  network_address_expect "DNS" "${dns_server}" "${SANDBOX_AGENT_DNS_IP}"
 
   temporary_file="$(mktemp "${runtime_dir}/resolv.conf.XXXXXX")"
   printf 'nameserver %s\noptions ndots:0 timeout:1 attempts:2\n' \
     "${dns_server}" >"${temporary_file}"
   chmod 0444 "${temporary_file}"
-  mv --force "${temporary_file}" "${resolv_conf_file}"
+  if cmp -s "${temporary_file}" "${resolv_conf_file}"; then
+    rm --force "${temporary_file}"
+  else
+    mv --force "${temporary_file}" "${resolv_conf_file}"
+  fi
 }
 
 for _ in $(seq 1 30); do

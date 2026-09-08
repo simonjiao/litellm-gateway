@@ -13,12 +13,12 @@ def test_agent_dns_only_serves_deployment_supplied_internal_records() -> None:
     assert "server=" not in config
 
 
-def test_agent_dns_is_internal_and_uses_no_pinned_address() -> None:
+def test_agent_dns_is_internal_and_pins_the_configured_address() -> None:
     launcher = (ROOT / "scripts" / "run-agent-dns.sh").read_text()
     policy_check = (ROOT / "scripts" / "check-egress-policy.sh").read_text()
 
     assert '--network "${sandbox_network}"' in launcher
-    assert "\n  --ip " not in launcher
+    assert '--ip "${SANDBOX_AGENT_DNS_IP}"' in launcher
     assert ':/etc/agent-dns/hosts:ro"' in launcher
     assert ':/etc/resolv.conf:ro"' in policy_check
 

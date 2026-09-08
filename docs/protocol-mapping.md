@@ -96,6 +96,10 @@ Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用�
 | MCP arguments | `response.mcp_call_arguments.done` |
 | completed/failed MCP call | 对应 `response.mcp_call.*` + output-item done |
 | `turn/completed` | `response.completed/incomplete/failed` |
+| `error` / `turn/error`，`willRetry=true` | 保持执行中，等待后续通知 |
+| `error` / `turn/error`，无明确重试标志 | `response.failed` |
+
+执行阶段受 `CODEX_ADAPTER_REQUEST_TIMEOUT_SECONDS` 限制；超时后尝试中断 Turn 并返回失败。
 
 `mcp_call.output` 保存完整 MCP `CallToolResult` JSON，包括 `content`、`structuredContent`、`isError` 与 `_meta`。
 

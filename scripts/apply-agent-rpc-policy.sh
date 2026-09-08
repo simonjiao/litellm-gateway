@@ -11,6 +11,7 @@ fi
 
 # shellcheck source=scripts/lib/network-policy.sh
 source scripts/lib/network-policy.sh
+source scripts/lib/network-addresses.sh
 
 rpc_network="${SANDBOX_MANAGER_RPC_NETWORK:-agent-rpc}"
 worker_port="${SANDBOX_MANAGER_WORKER_PORT:-8091}"
@@ -39,6 +40,7 @@ if [[ -z "${adapter_address}" ]]; then
 fi
 
 bridge_name="$(network_policy_bridge_name "${rpc_network}")"
+network_address_expect "Adapter RPC" "${adapter_address}" "${SANDBOX_ADAPTER_RPC_IP}"
 
 network_policy_select_iptables "${policy_image}"
 

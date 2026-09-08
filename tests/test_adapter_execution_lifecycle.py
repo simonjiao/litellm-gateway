@@ -49,6 +49,40 @@ def _settings() -> tuple[Settings, WorkerSettings]:
 
 
 @pytest.mark.asyncio
+async def test_retry_notification_does_not_end_the_public_response() -> None:
+    settings, worker_settings = _settings()
+    app = create_app(settings, sandbox_client=InProcessSandbox(worker_settings))
+    async with app.router.lifespan_context(app):
+        stream = await app.state.service.create_streaming(
+            CreateResponseRequest(model="gpt-5.6-terra", input="retry then say hello", stream=True)
+        )
+        events = [event async for event in stream]
+        assert all(event["type"] != "response.failed" for event in events)
+        assert events[-1]["type"] == "response.completed"
+
+
+@pytest.mark.asyncio
+async def test_retry_followed_by_silence_times_out_and_interrupts_the_turn() -> None:
+    settings, worker_settings = _settings()
+    settings.request_timeout_seconds = 0.15
+    sandbox = InProcessSandbox(worker_settings)
+    app = create_app(settings, sandbox_client=sandbox)
+    async with app.router.lifespan_context(app):
+        stream = await app.state.service.create_streaming(
+            CreateResponseRequest(
+                model="gpt-5.6-terra", input="retry then wait until cancelled", stream=True
+            )
+        )
+        async with asyncio.timeout(3):
+            events = [event async for event in stream]
+        assert events[-1]["type"] == "response.failed"
+        response = events[-1]["response"]
+        assert response["status"] == "failed"
+        assert response["error"]["message"] == "Agent execution timed out"
+        assert any(method == "turn/interrupt" for _, method, _ in sandbox.rpc_calls)
+
+
+@pytest.mark.asyncio
 async def test_stream_disconnect_only_unsubscribes_execution_continues() -> None:
     settings, worker_settings = _settings()
     sandbox = InProcessSandbox(worker_settings)

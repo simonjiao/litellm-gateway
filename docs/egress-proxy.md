@@ -4,7 +4,8 @@
 
 Sandbox Worker 同时加入内部网络 `agent-rpc` 和 `agent-egress`。前者只承载
 Adapter→Worker RPC/SSE；后者只允许 Worker 访问 `agent-dns`、`egress-proxy` 和明确声明的
-内部服务。两个网络均不提供直接互联网路由，容器地址由 Docker 动态分配。
+内部服务。两个网络均不提供直接互联网路由。DNS、代理在 `agent-egress` 上、Adapter 在
+`agent-rpc` 上使用固定地址；Worker 从各网络独立的动态地址池分配地址。
 
 ```text
 Adapter ── agent-rpc ──→ Worker (runsc)
@@ -17,8 +18,17 @@ Adapter ── agent-rpc ──→ Worker (runsc)
 
 `runsc` Worker 使用部署生成的只读 resolver 文件，不依赖 Docker 注入的
 `127.0.0.11`。`agent-dns` 没有上游，只解析策略代理和
-`SANDBOX_AGENT_INTERNAL_SERVICES` 声明的精确服务名。启动脚本根据容器当前地址生成 hosts 和
-resolver 文件，不配置固定 IP 或固定子网。
+`SANDBOX_AGENT_INTERNAL_SERVICES` 声明的精确服务名。部署配置统一指定固定网段、网关、动态池
+和服务地址；默认 DNS 为 `172.22.0.53`、代理为 `172.22.0.54`、Adapter RPC 为 `172.21.0.10`。
+两个动态池分别为 `172.22.128.0/17` 和 `172.21.128.0/17`，不会自动占用固定地址。
+启动脚本校验实际服务地址后生成 hosts 和 resolver；内容不变时保留 resolver 文件，避免
+已有只读文件挂载失效。固定基础服务重建沿用原地址，无需运行时更新 DNS。
+重建可能暂时中断现有连接，Worker 通过重试恢复。
+
+`prepare-sandbox-network.sh` 拒绝与配置不符的现有网络，不自动删除网络或容器。旧部署首次
+迁移时需停止入口、Manager 和 Worker，移除受影响容器，再重建 `agent-rpc`、`agent-egress`。
+保留 Manager 状态卷、可恢复 Workspace 和 Artifact 数据；后续正常重建不需要重建网络。
+额外声明的内部服务应固定其 Agent 网络地址；修改这些服务的地址或声明后需重新部署。
 
 主机策略运行时发现网络网桥和服务地址。`DOCKER-USER` 检查进入 Agent 网桥的全部转发流量，
 INPUT 链拒绝 Agent 到宿主的连接，只允许：
@@ -66,6 +76,10 @@ bash scripts/run-stack.sh
 bash scripts/check-egress-policy.sh
 bash scripts/run-basic-smoke.sh
 ```
+
+镜像已准备好时使用 `bash scripts/run-stack.sh --no-build`。启动流程会先恢复方向性规则并
+完成真实 `runsc` 连通性检查，再启动 Gateway 和 Open WebUI；检查失败时保持入口停止。
+DNS、代理由 `unless-stopped` 在进程退出后重启；手动停止或删除后需显式启动或重建。
 
 策略检查使用真实 `runsc` Worker 镜像，验证允许域名可经代理访问、未允许域名被拒绝，并验证
 Adapter 可通过服务名连接 Worker，而 Worker 不能连接控制面、宿主网桥或运行时解析得到的

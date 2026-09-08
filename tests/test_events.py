@@ -1,7 +1,41 @@
 from __future__ import annotations
 
+import pytest
+
 from codex_responses_adapter.events import ResponsesEventBuilder
 from codex_responses_adapter.models import CreateResponseRequest, ResponseRecord
+
+
+@pytest.mark.parametrize("method", ["error", "turn/error"])
+def test_retryable_error_allows_the_turn_to_complete(method: str) -> None:
+    record = ResponseRecord.create(CreateResponseRequest(model="gpt-5.6-terra", input="hi"), [])
+    builder = ResponsesEventBuilder(record)
+    assert (
+        builder.consume(
+            {
+                "method": method,
+                "params": {"error": {"message": "Reconnecting... 2/5"}, "willRetry": True},
+            }
+        )
+        == []
+    )
+    assert not builder.terminal
+    events = builder.consume(
+        {"method": "turn/completed", "params": {"turn": {"status": "completed"}}}
+    )
+    assert events[-1]["type"] == "response.completed"
+    assert record.error is None
+
+
+@pytest.mark.parametrize("retry", [False, None, "true"])
+def test_error_without_explicit_retry_still_fails(retry: bool | str | None) -> None:
+    record = ResponseRecord.create(CreateResponseRequest(model="gpt-5.6-terra", input="hi"), [])
+    builder = ResponsesEventBuilder(record)
+    events = builder.consume(
+        {"method": "error", "params": {"error": {"message": "failed"}, "willRetry": retry}}
+    )
+    assert events[-1]["type"] == "response.failed"
+    assert builder.terminal
 
 
 def test_maps_agent_text_and_completion() -> None:

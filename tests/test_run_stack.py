@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -14,7 +16,7 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 def _run_stack(
-    tmp_path: Path, *, extra_env: str = "", fail_script: str = ""
+    tmp_path: Path, *, extra_env: str = "", fail_script: str = "", no_build: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     project = tmp_path / "project"
     scripts = project / "scripts"
@@ -68,7 +70,7 @@ exit 0
     env["ACTION_LOG"] = str(action_log)
     env["FAIL_SCRIPT"] = fail_script
     result = subprocess.run(
-        ["/bin/bash", "scripts/run-stack.sh"],
+        ["/bin/bash", "scripts/run-stack.sh", *(["--no-build"] if no_build else [])],
         cwd=project,
         env=env,
         text=True,
@@ -98,6 +100,7 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
     )
     apply_rpc = actions.index("bash scripts/apply-agent-rpc-policy.sh")
     apply_egress = actions.index("bash scripts/apply-agent-egress-policy.sh")
+    check_network = actions.index("bash scripts/check-egress-policy.sh")
     start_gateway = next(
         index
         for index, action in enumerate(actions)
@@ -107,7 +110,14 @@ def test_stack_exposes_gateway_only_after_network_policy_is_ready(tmp_path: Path
         and "adapter" not in action
     )
 
-    assert stop_entry_workloads < start_control < apply_rpc < apply_egress < start_gateway
+    assert (
+        stop_entry_workloads
+        < start_control
+        < apply_rpc
+        < apply_egress
+        < check_network
+        < start_gateway
+    )
 
 
 def test_stack_exposes_open_webui_only_after_gateway_is_ready(tmp_path: Path) -> None:
@@ -115,9 +125,7 @@ def test_stack_exposes_open_webui_only_after_gateway_is_ready(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     actions = action_log.read_text().splitlines()
-    stop_entrypoints = actions.index(
-        "docker compose stop open-webui gateway adapter"
-    )
+    stop_entrypoints = actions.index("docker compose stop open-webui gateway adapter")
     apply_egress = actions.index("bash scripts/apply-agent-egress-policy.sh")
     start_gateway = next(
         index
@@ -153,19 +161,30 @@ def test_stack_rejects_a_secret_root_visible_to_other_host_users(tmp_path: Path)
     assert secret_root.stat().st_mode & 0o777 == 0o755
 
 
-def test_stack_stops_entry_workloads_when_policy_application_fails(
+@pytest.mark.parametrize(
+    "failed_script", ["apply-agent-egress-policy.sh", "check-egress-policy.sh"]
+)
+def test_stack_stops_entry_workloads_when_network_setup_fails(
     tmp_path: Path,
+    failed_script: str,
 ) -> None:
     result, action_log, _ = _run_stack(
         tmp_path,
-        fail_script="scripts/apply-agent-egress-policy.sh",
+        fail_script=f"scripts/{failed_script}",
     )
 
     assert result.returncode != 0
     actions = action_log.read_text().splitlines()
-    failed_policy = actions.index("bash scripts/apply-agent-egress-policy.sh")
+    failed_policy = actions.index(f"bash scripts/{failed_script}")
     assert any(
-        index > failed_policy
-        and action == "docker compose stop open-webui gateway adapter"
+        index > failed_policy and action == "docker compose stop open-webui gateway adapter"
         for index, action in enumerate(actions)
     )
+
+
+def test_no_build_reuses_images_but_still_checks_network_before_start(tmp_path: Path) -> None:
+    result, action_log, _ = _run_stack(tmp_path, no_build=True)
+    assert result.returncode == 0, result.stderr
+    actions = action_log.read_text().splitlines()
+    assert not any("compose build" in action or "scripts/build-" in action for action in actions)
+    assert "bash scripts/check-egress-policy.sh" in actions

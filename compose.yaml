@@ -180,8 +180,9 @@ services:
       sandbox-manager:
         condition: service_healthy
     networks:
-      - control
-      - agent-rpc
+      control: {}
+      agent-rpc:
+        ipv4_address: ${SANDBOX_ADAPTER_RPC_IP:-172.21.0.10}
 
   sandbox-manager:
     <<: *common-runtime

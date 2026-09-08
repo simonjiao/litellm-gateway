@@ -39,8 +39,8 @@ Artifact Service/BFF 的外部入口负责 TLS。跨不可信网络连接 RustFS
 
 ## 服务发现
 
-配置只使用 DNS 服务名，不固定 IP。下面的名称和端口均为部署时分配的逻辑标识，不是
-架构常量：
+业务连接配置使用 DNS 服务名；Docker 部署为 DNS、代理和 Adapter RPC 保留固定网络地址。
+下面的名称和端口均为部署时分配的逻辑标识，不是架构常量：
 
 ```text
 Open WebUI → gateway.<control-domain>:<gateway-port>
@@ -75,8 +75,9 @@ allow  Worker → egress-proxy
 allow  one-shot → operation-scoped Artifact/object-storage endpoint
 ```
 
-规则应基于工作负载身份、标签、网络域或运行时发现的数据生成，不依赖固定 IP。Adapter 的
-服务监听面只属于 control；agent-rpc 仅用于 Adapter 发起到 Worker 的连接。
+规则基于工作负载身份、标签、网络域和部署校验后的地址生成。固定基础服务使用保留地址，
+Worker 动态分配地址。Adapter 的服务监听面只属于 control；agent-rpc 仅用于 Adapter 发起
+到 Worker 的连接。
 
 Docker 参考部署只接受本地 IPv4 bridge 网络。进入 agent-rpc、agent-egress 网桥的全部转发
 流量均进入默认拒绝策略，发往宿主的流量由 INPUT 策略拒绝。规则先写入未引用链，完整后再
@@ -218,8 +219,11 @@ Open WebUI 消息渲染，并由同源 BFF 代理 Adapter 的 `/v1/mcp-apps/*` �
 忽略版本控制且权限为 `0700` 的 Secret 根目录，再只读注入 Worker；不会把认证写入镜像。
 自定义 `SANDBOX_MANAGER_SECRET_ROOT` 也必须由部署用户拥有且权限为 `0700`。
 
-Open WebUI、Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或宿主重启、
-Adapter/DNS/代理/内部服务变化后，必须再次执行 `run-stack.sh`；脚本重建 Manager 和
+Open WebUI、Gateway 和 Adapter 不绕过宿主策略自动重启。Docker 或宿主重启后，
+必须再次执行 `run-stack.sh --no-build`，恢复规则并通过真实 `runsc` 检查后开放入口。
+DNS、代理、Adapter RPC 的固定地址必须位于各网络动态池之外，重建时沿用部署配置。
+首次从动态地址部署迁移时需停机重建 `agent-rpc`、`agent-egress`；保留数据卷。
+修改网络或内部服务配置后再次执行部署脚本；脚本重建 Manager 和
 Adapter、清理现有 Worker 及实例级临时 Workspace、原子恢复策略，失败时保持 Open WebUI、
 Gateway 和 Adapter 停止。部署操作会结束活动 Sandbox，但必须保留 Manager 状态卷和可恢复
 Workspace；Artifact 对象不参与 Worker 清理。

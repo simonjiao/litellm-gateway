@@ -154,12 +154,13 @@ def test_entry_workload_restart_is_gated_by_host_network_policy() -> None:
     assert compose["services"]["adapter"]["restart"] == "no"
 
 
-def test_compose_uses_dns_and_contains_no_fixed_network_address() -> None:
+def test_compose_uses_service_names_and_pins_only_the_adapter_rpc_address() -> None:
     text = (ROOT / "compose.yaml").read_text()
 
     assert "http://adapter:8090/v1" in text
     assert "http://sandbox-manager:8092" in text
-    assert "ipv4_address" not in text
+    assert text.count("ipv4_address:") == 1
+    assert "ipv4_address: ${SANDBOX_ADAPTER_RPC_IP:-172.21.0.10}" in text
     assert "subnet:" not in text
 
 

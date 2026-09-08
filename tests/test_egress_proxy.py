@@ -62,11 +62,12 @@ def test_proxy_healthcheck_probes_the_listener_without_pid_assumptions() -> None
     assert "-k check" not in dockerfile
 
 
-def test_proxy_launcher_and_policy_check_do_not_pin_network_addresses() -> None:
+def test_proxy_pins_its_agent_address_and_checks_with_a_dynamic_worker() -> None:
     launcher = (ROOT / "scripts" / "run-egress-proxy.sh").read_text()
     policy_check = (ROOT / "scripts" / "check-egress-policy.sh").read_text()
 
-    assert "\n  --ip " not in launcher
+    assert '--ip "${SANDBOX_EGRESS_PROXY_IP}"' in launcher
+    assert "\n  --ip " not in policy_check
     assert '--runtime "${sandbox_runtime}"' in policy_check
     assert "--add-host" not in policy_check
 
@@ -85,6 +86,7 @@ def test_existing_egress_uplink_must_be_a_local_ipv4_bridge(tmp_path: Path) -> N
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
     shutil.copy2(ROOT / "scripts" / "run-egress-proxy.sh", scripts)
+    shutil.copytree(ROOT / "scripts" / "lib", scripts / "lib")
     (project / ".env").write_text("")
 
     docker = fake_bin / "docker"

@@ -152,7 +152,8 @@ BFF 使用 Open WebUI 已有的 `user_message_id` 隔离输入、`assistant_mess
 
 必须允许 Adapter→Worker 的新连接及其返回流量，并拒绝 Worker→Adapter/Manager/Artifact/对象
 存储的新连接。Agent 互联网访问默认拒绝，只允许经过 egress-proxy；MCP 或本地模型等内部
-接口也必须按服务身份和端口显式允许。所有内部调用使用 DNS 服务名，不在配置中固定 IP。
+接口也必须按服务身份和端口显式允许。所有内部调用使用 DNS 服务名；Docker 部署在网络
+配置中为 DNS、代理和 Adapter RPC 保留固定地址，Worker 仍从动态地址池分配地址。
 
 ## 运行环境要求
 
