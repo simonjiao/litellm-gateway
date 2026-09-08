@@ -7,7 +7,7 @@ Sandbox Workspace 的可恢复性。Artifact 是不可变对象，Workspace 使�
 
 | 数据 | 权威存储 | 访问入口 |
 |---|---|---|
-| 用户、对话、笔记和业务 ACL | Open WebUI 数据库 | Open WebUI |
+| 用户、对话、笔记、文件元数据和业务 ACL | Open WebUI 数据库 | Open WebUI |
 | Artifact 内容与不可变 manifest | 私有对象存储 | Artifact API；BFF/MCP capability |
 | 消息绑定、publish intent 与业务引用 | Open WebUI 或调用方数据库 | 对应业务服务 |
 | 活动 Workspace | 本地 POSIX 卷 | 对应 Worker；受控一次性任务 |
@@ -15,23 +15,17 @@ Sandbox Workspace 的可恢复性。Artifact 是不可变对象，Workspace 使�
 | Workspace revision | 对象存储中的 restic 仓库 | Manager 编排的一次性任务 |
 | Workspace/operation 状态 | Manager 持久数据库 | Manager 控制接口 |
 
-将 Artifact 内容配置到 S3 不会把 Open WebUI 的笔记或对话正文迁入对象存储。对象存储无需让
-浏览器、MCP App 或 Sandbox 直接访问；它可以仅在内网提供服务。外部调用方通过带 TLS 的
-Artifact Service/BFF 访问文件，不取得 S3 AK/SK。
+浏览器、MCP App 和 Sandbox 不取得对象存储凭证。
 
 生产部署中，Artifact 内容与 Workspace restic 仓库使用不同的 bucket/prefix 和服务凭证；
 restic repository password 作为第三个独立 Secret 保存。Artifact Service 凭证只访问 Artifact
-前缀；Manager 的 Workspace 父凭证只用于调用 RustFS STS。每个 Workspace 使用独立 restic
+前缀；Manager 的 Workspace 父凭证只用于调用 STS。每个 Workspace 使用独立 restic
 repository prefix，一次性快照任务只收到该 prefix 的临时会话凭证，不共享跨 Workspace 去重。
-
-本地验收可由 `configure-rustfs.py` 导入现有 rclone 业务 AK/SK，并显式使用 `static` 模式；
-Artifact Service 与 Manager 使用独立、按前缀限制的业务凭证，Worker 不可见。生产环境使用
-独立 IAM 身份；Workspace 一次性任务默认使用 `sts` 模式。
 
 ## Artifact Service
 
-Artifact Service 是唯一新增的常驻存储服务，但首版只是 RustFS 前的无状态薄网关：负责不可变
-Artifact 的上传、查询和下载，不另建元数据数据库、引用系统或传输 Worker。最小接口为：
+Artifact Service 是无状态文件服务，负责不可变 Artifact 的上传、查询、下载和删除；元数据
+保存在 manifest 中，业务引用由调用方维护。最小接口为：
 
 ```text
 create_upload → UploadTarget
@@ -41,37 +35,39 @@ create_download(artifact_id) → DownloadTarget
 delete(artifact_id) → Deleted  # 仅受信任业务服务
 ```
 
-上传先写随机、不可覆盖的内容键；完成时校验大小和摘要，最后写不可变 manifest 作为提交标记。
-`inspect` 和下载只接受已有 manifest 的对象，因此未完成上传不可见；残留内容由 bucket lifecycle
-延迟清理。manifest 只含 `artifact_id`、所有者、展示名、媒体类型、大小、摘要和创建时间；
+上传 PUT 流式写入临时对象，限制大小并增量计算 SHA-256；核验声明的大小和摘要后，提交
+不可覆盖的内容对象，最后写不可变 manifest 作为提交标记。
+`complete_upload` 只确认已有提交结果；`inspect` 和下载只接受已有 manifest 的对象。
+上传失败时主动终止未完成分片；生命周期规则只回收上传临时前缀中的残留分片和临时对象，
+不对正式内容与 manifest 设置过期删除。
+manifest 只含 `artifact_id`、所有者、展示名、媒体类型、大小、摘要和创建时间；
 `artifact_id` 是不透明标识，不包含对象键，也不是凭证。
+
+`/healthz` 表示进程存活；`/readyz` 检查服务身份能否访问目标桶，成功返回 200，不可用返回
+503，供部署判断存储依赖是否就绪。
 
 Open WebUI/BFF 负责业务 ACL，并维护消息与 `artifact_id` 的绑定；Artifact Service 只验证可信
 服务身份或短期 capability。Artifact 所有者在自身引用解除并经过宽限期后，才用受信任接口删除
 对象；网关不推断跨系统引用，非所有者只能获得限时访问。外部 MCP App 的 capability 绑定
-调用方、`app_id`、Artifact、操作、大小和有效期。控制和文件流均使用 HTTPS；大文件流式传输，
-不落服务本地磁盘。
+调用方、`app_id`、Artifact、操作、大小和有效期。控制和文件流均使用 HTTPS。
 本地 `Path` 的 materialize/publish 不属于 Artifact API，而是 Manager 内部的 Workspace 文件
-桥接能力。`storage-ops` 只消费一次性 `UploadTarget` 或 `DownloadTarget`，不持有 Artifact Service
-或对象存储长期凭证。
+桥接能力。Artifact capability 是短期、单对象 Bearer，在有效期内允许传输重试，不是严格的
+一次性 token；`storage-ops` 只短暂持有 `UploadTarget` 或 `DownloadTarget`，不持有 Artifact
+Service 或对象存储长期凭证。Manager 自身带 nonce 的 operation grant 仍按单次消费处理。
 
 外部 MCP App 通过 MCP Host 取得同一 HTTP 接口的短期目标；无需为文件复制再定义一套 MCP
 工具协议，MCP 消息也不承载大文件字节。Host 注入调用方和 `app_id`，App 不能自行声明身份、
 对话绑定或扩大 Artifact 范围；消息附件绑定仍只能由 BFF 完成。
 
+受信任外部服务通过版本化 HTTP 契约接入，以独立 Artifact Service 实例、凭据和对象前缀
+隔离业务；其可信 BFF/Gateway 负责用户认证与业务 ACL，调用方只能在授予的 Artifact 范围内
+操作。服务凭据和内部传输目标不进入模型输入或用户下载链接。
+
 ## 对话绑定
 
-同源 BFF 在 Open WebUI 数据库中维护不可由用户修改的 `chat_workspaces`、publish intent 和消息
-Artifact 绑定。记录只保存业务控制信息与不透明 ID；访问权每次从 Open WebUI 对话 ACL 重新判断。
-
-- 对话首次执行 Agent 时，BFF 经 Adapter 请求 Manager 创建可恢复 Workspace，再保存映射；
-- 后续请求取得同一 `workspace_id` 并注入短期签名授权，Adapter 转交给 Manager；
-- 无已认证对话上下文时不创建映射，Manager 使用实例级临时 Workspace；
-- 克隆或分叉对话默认创建新的空 Workspace，不继承原 Workspace；
-- 删除对话时解除映射并请求停止活动租约，Workspace 按保留策略延迟删除。
-
-BFF 以 Open WebUI v0.11.1 派生镜像中的薄路由实现，复用其用户认证、Chats 和消息附件展示；
-数据库只保存业务绑定和展示所需描述符，不保存文件内容或对象键。
+同源 BFF 在 Open WebUI 数据库中维护对话与 Workspace 映射、publish intent 和消息 Artifact
+绑定；用户不能直接修改这些映射。记录保存业务控制信息与不透明 ID，访问权依据 Open WebUI
+ACL 判断。Workspace 的创建、复用和解除映射见 [设计总览](design.md#对话与-workspace-绑定)。
 
 ## Workspace 目录约定
 
@@ -91,17 +87,23 @@ BFF 验证用户消息和助手消息属于同一对话链，并在助手消息�
 输出成为 Artifact。checkpoint 保存整个 `/workspace`，不保存 `/tmp`；Manager 的候选暂存区不挂载
 给 Worker，也不进入 checkpoint。
 
-## 用户上传与下载
+## 对话附件上传与下载
 
 ```text
-上传：Browser → Open WebUI auth/ACL → Artifact upload → object storage
-                                      └→ message ↔ artifact_id binding
-
-下载：stable BFF link → Open WebUI auth/ACL → short ticket → Artifact Service → Browser
+上传：Browser → 同源 BFF → Artifact Service → 对象存储
+下载：Browser ← 同源 BFF ← Artifact Service ← 对象存储
 ```
 
-Open WebUI 把上传完成后返回的 `artifact_id` 绑定到对话消息，并显示稳定应用链接；每次下载都
-重新校验用户与对话权限，再签发短期、单对象票据。对象存储保持私有。
+BFF 和 Artifact Service 以有界内存缓冲和背压逐块转发文件，上传解析及下载均不落本地磁盘。
+Open WebUI 只保存文件元数据和 `file_id → artifact_id` 映射，文件内容统一由 Artifact 保存。
+
+Artifact 提交且文件记录与映射持久化后，才返回上传成功；用户发送消息时再建立消息附件绑定。
+用户上传和 Agent 生成物统一使用该文件记录，附件卡片及正文中的下载链接均指向同源 BFF；
+已发布的 `sandbox:` 候选替换为稳定应用链接。
+每次下载重新校验文件所有者或对话访问权限，短期传输票据仅由 BFF 内部使用。
+
+Open WebUI 不承担知识库/RAG 和附件自动解析，文件解析由 Agent 在 Workspace 中完成；
+Workspace 的文件落盘遵循 checkout/publish 约定。
 
 ## 文件进入 Sandbox
 
@@ -135,9 +137,8 @@ publish intent 持久化 `pending/captured/uploading/uploaded/ready`、`operatio
 
 事件触发是主路径；用户点击未就绪候选时立即推进同一 intent，BFF 周期任务查询到期记录进行
 补偿。重试根据持久化 intent 和当前消息绑定签发新 nonce 的短期授权，并保持原幂等键。只有
-`ready` 返回鉴权下载，其他状态不暴露对象地址。稳定副本保留到 Artifact manifest 提交；未完成
-对象和放弃的未绑定 Artifact 分别由生命周期规则和宽限期清理。已绑定 Artifact 不随 Sandbox
-或 Workspace 清理删除。
+`ready` 返回鉴权下载，其他状态不暴露对象地址。稳定副本保留到 Artifact manifest 提交。
+已绑定 Artifact 不随 Sandbox 或 Workspace 清理删除。
 
 ## Workspace 持久化
 

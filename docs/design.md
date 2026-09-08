@@ -36,7 +36,7 @@ Open WebUI / 同源 BFF（Backend for Frontend）
 
 | 模块 | 职责 |
 |---|---|
-| Open WebUI / BFF | 用户认证、会话与文件 ACL；模型选择；Artifact 绑定、发布对账和稳定下载入口 |
+| Open WebUI / BFF | 用户认证、会话与文件 ACL；模型选择；附件流式转发、文件与 Artifact 绑定、发布对账和稳定下载入口 |
 | LiteLLM | Responses 入口、模型目录与路由、部署认证和治理 |
 | Adapter | Responses 请求与事件映射、Worker RPC/SSE；调用 Manager 并转交 BFF 文件操作授权 |
 | Sandbox Manager | Sandbox 生命周期、Workspace 生命周期、受控文件操作编排和操作状态恢复 |
@@ -91,21 +91,9 @@ Adapter 将解析后的 Codex 模型传给 Agent Runtime；对外 Response 保�
 
 ## 文件与 Workspace 存储
 
-存储按数据语义分层，详细流程见 [文件与 Workspace 存储](storage.md)：
-
-| 数据 | 权威存储 | 说明 |
-|---|---|---|
-| 用户、对话、笔记和业务 ACL | Open WebUI 数据库 | 配置 S3 不会把笔记和对话改存为对象 |
-| Artifact 内容与不可变 manifest | 私有对象存储 | `artifact_id` 不包含存储位置或权限 |
-| 消息绑定、publish intent 与业务引用 | Open WebUI 或调用方数据库 | BFF 对账、稳定链接或短期 capability 下载 |
-| 活动 Workspace | 本地 POSIX 卷 | 低延迟读写；仅挂载给对应 Worker 或一次性任务 |
-| 待发布候选副本 | Manager 本地持久卷 | 仅保留到 Artifact manifest 提交或操作过期 |
-| Workspace revision | 对象存储中的 restic 仓库 | 后台增量 checkpoint 和按需 restore |
-| Workspace/operation 控制状态 | Manager 持久数据库 | 记录本地代次、远端 head、租约与操作状态 |
-
-对象存储无需由浏览器或 Sandbox 直接访问，现有环境可继续只提供隔离 `storage` 网络内的 HTTP。
-浏览器和外部 MCP App 只访问带 TLS 的 Artifact Service/BFF，不接收对象存储凭证；对象存储
-跨越不可信网络时才要求额外 TLS 或等价加密隧道。
+业务记录与文件引用由业务数据库管理，文件内容保存为不可变 Artifact；活动 Workspace 使用
+本地 POSIX 卷，并通过快照恢复。数据归属、文件流、提交语义和就绪检查统一由
+[文件与 Workspace 存储](storage.md) 定义。
 
 ## 对话与 Workspace 绑定
 
@@ -135,8 +123,8 @@ BFF 使用 Open WebUI 已有的 `user_message_id` 隔离输入、`assistant_mess
 | Sandbox Worker | 访问自己的 Workspace、策略代理和明确允许的内部接口 | 访问 Artifact Service、对象存储、Adapter、Manager 或运行平台凭证 |
 | egress-proxy | 访问允许的外部目标 | 接受非 Agent 网络来源或转发未授权目标 |
 
-各服务使用独立部署凭证。操作授权必须短期、单次使用并绑定操作范围；底层平台授权应限制在
-受管资源，无法细分权限时必须使用专用节点或等价隔离降低影响面。
+各服务使用独立部署凭证。Manager 操作授权必须短期、单次使用并绑定操作范围；底层平台授权
+应限制在受管资源，无法细分权限时必须使用专用节点或等价隔离降低影响面。
 
 ## 网络控制
 

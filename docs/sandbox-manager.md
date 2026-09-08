@@ -159,7 +159,7 @@ publish 处理终态 Response 中明确的 `sandbox:` 候选：
    或失败前不提交同一 Workspace 的下一 Turn。
 3. `artifact-publish-*` 以受控目录描述符打开普通文件，复制到 Worker 不可见的暂存区，计算摘要
    并校验复制期间未变化；临时文件和 manifest 经 `fsync` 后原子提交。失败候选不得继续上传。
-4. 捕获完成即释放执行屏障；每次上传尝试取得新的单次目标，从稳定副本创建 Artifact。
+4. 捕获完成即释放执行屏障；每次上传尝试取得新的短期上传目标，从稳定副本创建 Artifact。
    Artifact Service 校验大小和摘要、提交不可变 manifest 并返回 `artifact_id`。
 5. BFF 将 Artifact 附加到助手消息后把 intent 标记为 ready。上传失败从稳定副本重试；绑定失败
    只重试绑定；相同幂等键不重复上传或附加，放弃的未绑定 Artifact 经过宽限期后删除。
