@@ -40,14 +40,7 @@ services:
       AGENT_MAX_FILE_BYTES: ${AGENT_MAX_FILE_BYTES:-1073741824}
       AGENT_PUBLISH_RECONCILE_SECONDS: ${AGENT_PUBLISH_RECONCILE_SECONDS:-15}
       AGENT_PUBLISH_RETRY_LIMIT: ${AGENT_PUBLISH_RETRY_LIMIT:-8}
-      STORAGE_PROVIDER: ${OPEN_WEBUI_STORAGE_PROVIDER:-local}
-      S3_ENDPOINT_URL: ${RUSTFS_ENDPOINT:-}
-      S3_ACCESS_KEY_ID: ${OPEN_WEBUI_S3_ACCESS_KEY_ID:-}
-      S3_SECRET_ACCESS_KEY: ${OPEN_WEBUI_S3_SECRET_ACCESS_KEY:-}
-      S3_BUCKET_NAME: ${OPEN_WEBUI_S3_BUCKET:-agent-data}
-      S3_KEY_PREFIX: ${OPEN_WEBUI_S3_KEY_PREFIX:-open-webui/files}
-      S3_REGION_NAME: ${RUSTFS_REGION:-us-east-1}
-      S3_ADDRESSING_STYLE: path
+      STORAGE_PROVIDER: local
     ports:
       - ${OPEN_WEBUI_PORT:-3000}:8080
     volumes:
@@ -99,7 +92,7 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8093/healthz', timeout=2)
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8093/readyz', timeout=2)
       interval: 5s
       timeout: 3s
       retries: 20

@@ -32,6 +32,18 @@ class _DeleteDeniedClient:
         return {"Errors": [{"Code": "AccessDenied", "Message": "Access Denied"}]}
 
 
+class _ReadinessClient:
+    def __init__(self, *, fails: bool = False) -> None:
+        self.fails = fails
+        self.bucket: str | None = None
+
+    def head_bucket(self, *, Bucket: str) -> dict[str, Any]:
+        self.bucket = Bucket
+        if self.fails:
+            raise RuntimeError("unavailable")
+        return {}
+
+
 @pytest.mark.asyncio
 async def test_delete_rejects_object_level_s3_errors() -> None:
     descriptor = ArtifactDescriptor(
@@ -55,3 +67,22 @@ async def test_delete_rejects_object_level_s3_errors() -> None:
 
     with pytest.raises(ArtifactConflictError, match="rejected Artifact deletion"):
         await store.delete(descriptor.artifact_id)
+
+
+@pytest.mark.asyncio
+async def test_readiness_checks_the_configured_bucket_without_leaking_errors() -> None:
+    settings = ArtifactSettings(
+        api_key=SecretStr("a" * 32),
+        capability_secret=SecretStr("b" * 32),
+        s3_endpoint_url="http://rustfs:9000",
+        s3_access_key_id="business-key",
+        s3_secret_access_key=SecretStr("business-secret"),
+        s3_bucket="agent-data",
+    )
+    client = _ReadinessClient()
+    store = S3ArtifactStore(settings, client=client)
+    assert await store.ready() is True
+    assert client.bucket == "agent-data"
+
+    unavailable = S3ArtifactStore(settings, client=_ReadinessClient(fails=True))
+    assert await unavailable.ready() is False

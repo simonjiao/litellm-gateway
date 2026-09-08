@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
@@ -24,54 +25,74 @@ replace_once(
     "    requested_model = payload.get('model')\n",
 )
 
-replace_once(
-    "open_webui/routers/files.py",
-    "    result = await upload_file_handler(\n"
-    "        request,\n"
-    "        file=file,\n"
-    "        metadata=metadata,\n"
-    "        process=process,\n"
-    "        process_in_background=process_in_background,\n"
-    "        user=user,\n"
-    "        background_tasks=background_tasks,\n"
-    "        db=db,\n"
-    "    )\n\n"
-    "    if isinstance(result, dict):\n",
-    "    result = await upload_file_handler(\n"
-    "        request,\n"
-    "        file=file,\n"
-    "        metadata=metadata,\n"
-    "        process=process,\n"
-    "        process_in_background=process_in_background,\n"
-    "        user=user,\n"
-    "        background_tasks=background_tasks,\n"
-    "        db=db,\n"
-    "    )\n"
-    "    from agent_open_webui.workspace import register_uploaded_file\n\n"
-    "    await register_uploaded_file(request, user, result)\n\n"
-    "    if isinstance(result, dict):\n",
+
+def replace_endpoint(route: str, definition: str) -> None:
+    path = ROOT / "open_webui/routers/files.py"
+    content = path.read_text()
+    matches = [
+        node
+        for node in ast.parse(content).body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and any(
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Attribute)
+            and decorator.func.attr == ("post" if route == "/" else "get")
+            and decorator.args
+            and isinstance(decorator.args[0], ast.Constant)
+            and decorator.args[0].value == route
+            for decorator in node.decorator_list
+        )
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"Open WebUI v0.11.1 endpoint changed: {route}")
+    node = matches[0]
+    lines = content.splitlines(keepends=True)
+    lines[node.lineno - 1 : node.end_lineno] = [definition + "\n"]
+    path.write_text("".join(lines))
+
+
+# Remove FastAPI's multipart parameter as well as the native storage handler.
+# Otherwise Starlette can spool the request to disk before our handler runs.
+replace_endpoint(
+    "/",
+    """async def upload_file(request: Request, user=Depends(get_verified_user)):
+    from agent_open_webui.files import upload_file as stream_upload
+
+    result = await stream_upload(request, user)
+    await publish_event(
+        request, EVENTS.FILE_UPLOADED, actor=user, subject_id=result['id'],
+        data={'filename': result['filename'], 'content_type': result['meta']['content_type']},
+    )
+    return result
+""",
 )
+
+for route in ("/{id}/content", "/{id}/content/html", "/{id}/content/{file_name}"):
+    extra = "file_name: str, " if "{file_name}" in route else ""
+    replace_endpoint(
+        route,
+        f"""async def get_file_content_by_id(
+    id: str, {extra}user=Depends(get_verified_user), check: bool = Query(False)
+):
+    from agent_open_webui.router import uploaded_file_download
+
+    return await uploaded_file_download(id, user, check)
+""",
+    )
 
 replace_once(
     "open_webui/routers/files.py",
-    "async def get_file_content_by_id(\n"
-    "    id: str,\n"
-    "    user=Depends(get_verified_user),\n"
-    "    attachment: bool = Query(False),\n"
-    "    db: AsyncSession = Depends(get_async_session),\n"
-    "):\n"
-    "    file = await Files.get_file_by_id(id, db=db)\n",
-    "async def get_file_content_by_id(\n"
-    "    id: str,\n"
-    "    user=Depends(get_verified_user),\n"
-    "    attachment: bool = Query(False),\n"
-    "    db: AsyncSession = Depends(get_async_session),\n"
-    "):\n"
-    "    from agent_open_webui.router import uploaded_file_download\n\n"
-    "    artifact_response = await uploaded_file_download(id, user)\n"
-    "    if artifact_response is not None:\n"
-    "        return artifact_response\n"
-    "    file = await Files.get_file_by_id(id, db=db)\n",
+    "                await asyncio.to_thread(Storage.delete_file, file.path)\n"
+    "                await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=f'file-{id}')\n",
+    "                if file.path:\n"
+    "                    await asyncio.to_thread(Storage.delete_file, file.path)\n"
+    "                    await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=f'file-{id}')\n",
+)
+
+replace_once(
+    "open_webui/utils/middleware.py",
+    "    __event_emitter__ = extra_params['__event_emitter__']\n    sources = []\n",
+    "    # Attachments are checked out to the Agent Workspace by the BFF.\n    return body, {}\n",
 )
 
 replace_once(

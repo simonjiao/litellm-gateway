@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import Any
 
 from open_webui.internal.db import AsyncSessionLocal, Base, async_engine
+from open_webui.models.files import File as WebUIFile
+from open_webui.models.files import FileModel
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -170,28 +173,55 @@ async def consume_transfer_nonce(nonce: str, expires_at: int) -> bool:
     return True
 
 
-async def put_file_artifact(
-    file_id: str,
-    artifact_id: str,
-    owner_user_id: str,
-    descriptor_json: str,
-) -> None:
+async def register_artifact_file(
+    file_id: str, owner_user_id: str, descriptor: dict[str, Any]
+) -> dict[str, Any]:
+    """Commit the native file metadata and Artifact mapping in one transaction."""
     now = int(time.time())
     async with AsyncSessionLocal() as session:
-        existing = await session.get(FileArtifact, file_id)
-        if existing is None:
+        file = await session.get(WebUIFile, file_id)
+        binding = await session.get(FileArtifact, file_id)
+        if file is not None:
+            if (
+                binding is None
+                or binding.artifact_id != descriptor["artifact_id"]
+                or file.user_id != owner_user_id
+            ):
+                raise RuntimeError("File identity is already in use")
+            return FileModel.model_validate(file).model_dump()
+        file = WebUIFile(
+            id=file_id,
+            user_id=owner_user_id,
+            hash=descriptor["sha256"],
+            filename=descriptor["filename"],
+            path=None,
+            data={"status": "completed"},
+            meta={
+                "name": descriptor["filename"],
+                "size": descriptor["size"],
+                "content_type": descriptor["media_type"],
+                "file_hash": descriptor["sha256"],
+            },
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(file)
+        if binding is None:
             session.add(
                 FileArtifact(
                     file_id=file_id,
-                    artifact_id=artifact_id,
+                    artifact_id=descriptor["artifact_id"],
                     owner_user_id=owner_user_id,
-                    descriptor_json=descriptor_json,
+                    descriptor_json=json.dumps(descriptor, sort_keys=True, separators=(",", ":")),
                     created_at=now,
                 )
             )
-        elif existing.artifact_id != artifact_id:
-            raise RuntimeError("Open WebUI file is already bound to another Artifact")
+        elif binding.artifact_id != descriptor["artifact_id"]:
+            raise RuntimeError("File identity is already in use")
+        await session.flush()
+        result = FileModel.model_validate(file).model_dump()
         await session.commit()
+        return result
 
 
 async def get_file_artifact(file_id: str) -> dict[str, Any] | None:
@@ -283,9 +313,7 @@ async def put_response_binding(
         await session.commit()
 
 
-async def get_response_binding(
-    chat_id: str, assistant_message_id: str
-) -> dict[str, str] | None:
+async def get_response_binding(chat_id: str, assistant_message_id: str) -> dict[str, str] | None:
     async with AsyncSessionLocal() as session:
         binding = await session.get(ResponseBinding, assistant_message_id)
         if binding is None or binding.chat_id != chat_id:

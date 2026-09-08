@@ -46,6 +46,7 @@ Open WebUI → LiteLLM Gateway → Responses Adapter → Sandbox Worker (runsc)
 uv run pytest -q
 uv run ruff check .
 uv run basedpyright
+bash scripts/test-open-webui.sh # 使用已构建的 Open WebUI 镜像验证 BFF
 npm --prefix frontend/mcp-apps-host run check
 npm --prefix frontend/mcp-apps-host run build
 ```

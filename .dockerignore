@@ -3,6 +3,7 @@
 .pytest_cache
 .ruff_cache
 .venv
+.runtime
 **/__pycache__
 **/*.pyc
 frontend/mcp-apps-host/node_modules

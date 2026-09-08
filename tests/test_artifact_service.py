@@ -31,6 +31,10 @@ class _ArtifactStore:
     def __init__(self) -> None:
         self.descriptors: dict[str, ArtifactDescriptor] = {}
         self.contents: dict[str, bytes] = {}
+        self.is_ready = True
+
+    async def ready(self) -> bool:
+        return self.is_ready
 
     async def upload_and_commit(
         self,
@@ -133,6 +137,22 @@ async def test_upload_manifest_and_capability_download_are_atomic() -> None:
             descriptor = uploaded.json()
             assert descriptor["sha256"] == hashlib.sha256(content).hexdigest()
 
+            retried = await client.put(
+                target["url"],
+                headers={"Authorization": f"Bearer {target['token']}"},
+                content=content,
+            )
+            assert retried.status_code == 200
+            assert retried.json() == descriptor
+
+            compatibility_complete = await client.post(
+                f"/v1/uploads/{target['artifact_id']}/complete",
+                headers=service_headers,
+                json={"upload_id": "upload_" + "f" * 32},
+            )
+            assert compatibility_complete.status_code == 200
+            assert compatibility_complete.json() == descriptor
+
             inspected = await client.get(
                 f"/v1/artifacts/{target['artifact_id']}", headers=service_headers
             )
@@ -181,3 +201,31 @@ async def test_control_api_rejects_capability_and_missing_service_auth() -> None
                 },
             )
             assert response.status_code == 401
+            assert response.headers["cache-control"] == "no-store"
+            assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.asyncio
+async def test_liveness_is_independent_and_readiness_checks_object_storage() -> None:
+    settings = ArtifactSettings(
+        api_key=SecretStr("a" * 32),
+        capability_secret=SecretStr("b" * 32),
+        s3_endpoint_url="http://rustfs:9000",
+        s3_access_key_id="business-key",
+        s3_secret_access_key=SecretStr("business-secret"),
+        s3_bucket="agent-data",
+    )
+    store = _ArtifactStore()
+    app = create_app(settings, store=cast(S3ArtifactStore, store))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.get("/healthz")).status_code == 200
+            assert (await client.get("/readyz")).status_code == 200
+            store.is_ready = False
+            unavailable = await client.get("/readyz")
+
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"status": "not_ready"}
+    assert unavailable.headers["cache-control"] == "no-store"

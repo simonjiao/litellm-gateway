@@ -75,8 +75,6 @@ fi
 
 if [[ "${storage_enabled,,}" == "true" ]]; then
   : "${RUSTFS_ENDPOINT:?RUSTFS_ENDPOINT is required when storage is enabled}"
-  : "${OPEN_WEBUI_S3_ACCESS_KEY_ID:?OPEN_WEBUI_S3_ACCESS_KEY_ID is required}"
-  : "${OPEN_WEBUI_S3_SECRET_ACCESS_KEY:?OPEN_WEBUI_S3_SECRET_ACCESS_KEY is required}"
   : "${WORKSPACE_S3_PARENT_ACCESS_KEY:?WORKSPACE_S3_PARENT_ACCESS_KEY is required}"
   : "${WORKSPACE_S3_PARENT_SECRET_KEY:?WORKSPACE_S3_PARENT_SECRET_KEY is required}"
   : "${ARTIFACT_S3_ACCESS_KEY_ID:?ARTIFACT_S3_ACCESS_KEY_ID is required}"

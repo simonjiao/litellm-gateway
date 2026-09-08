@@ -32,14 +32,36 @@ class ArtifactValidationError(RuntimeError):
 class S3ArtifactStore:
     def __init__(self, settings: ArtifactSettings, *, client: Any | None = None) -> None:
         self._settings = settings
+        connection = {
+            "endpoint_url": settings.s3_endpoint_url,
+            "region_name": settings.s3_region,
+            "aws_access_key_id": settings.s3_access_key_id,
+            "aws_secret_access_key": settings.s3_secret_access_key.get_secret_value(),
+        }
         self._client = client or boto3.client(
-            "s3",
-            endpoint_url=settings.s3_endpoint_url,
-            region_name=settings.s3_region,
-            aws_access_key_id=settings.s3_access_key_id,
-            aws_secret_access_key=settings.s3_secret_access_key.get_secret_value(),
-            config=Config(s3={"addressing_style": "path"}),
+            "s3", **connection, config=Config(s3={"addressing_style": "path"})
         )
+        self._readiness_client = client or boto3.client(
+            "s3",
+            **connection,
+            config=Config(
+                s3={"addressing_style": "path"},
+                connect_timeout=0.5,
+                read_timeout=1,
+                retries={"total_max_attempts": 1},
+            ),
+        )
+
+    async def ready(self) -> bool:
+        """Verify that the configured bucket is reachable with this service identity."""
+        try:
+            await asyncio.to_thread(
+                self._readiness_client.head_bucket,
+                Bucket=self._settings.s3_bucket,
+            )
+        except Exception:
+            return False
+        return True
 
     async def upload_and_commit(
         self,
@@ -204,9 +226,13 @@ class S3ArtifactStore:
         return True
 
     async def close(self) -> None:
-        close = getattr(self._client, "close", None)
-        if callable(close):
-            await asyncio.to_thread(close)
+        clients = [self._client]
+        if self._readiness_client is not self._client:
+            clients.append(self._readiness_client)
+        for client in clients:
+            close = getattr(client, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
 
     async def _upload_part(
         self, key: str, upload_id: str, part_number: int, content: bytes
@@ -224,9 +250,7 @@ class S3ArtifactStore:
             raise ArtifactConflictError("Object storage did not return an ETag")
         return {"ETag": etag, "PartNumber": part_number}
 
-    async def _commit(
-        self, staging_key: str, descriptor: ArtifactDescriptor
-    ) -> ArtifactDescriptor:
+    async def _commit(self, staging_key: str, descriptor: ArtifactDescriptor) -> ArtifactDescriptor:
         with suppress(ArtifactNotFoundError):
             existing = await self.inspect(descriptor.artifact_id)
             _match_existing(
@@ -276,9 +300,7 @@ class S3ArtifactStore:
                         await asyncio.to_thread(
                             self._client.delete_object,
                             Bucket=self._settings.s3_bucket,
-                            Key=self._content_key(
-                                descriptor.artifact_id, descriptor.sha256
-                            ),
+                            Key=self._content_key(descriptor.artifact_id, descriptor.sha256),
                         )
                 raise
             return existing

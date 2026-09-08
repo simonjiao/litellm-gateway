@@ -1,0 +1,346 @@
+diff --git a/src/lib/apis/files/index.ts b/src/lib/apis/files/index.ts
+index 433fe2d..1fbe42b 100644
+--- a/src/lib/apis/files/index.ts
++++ b/src/lib/apis/files/index.ts
+@@ -8,91 +8,22 @@ export const uploadFile = async (
+ 	process?: boolean | null,
+ 	stream: boolean = true
+ ) => {
+-	const data = new FormData();
+-	data.append('file', file);
+-	if (metadata) {
+-		data.append('metadata', JSON.stringify(metadata));
+-	}
+-
+-	const searchParams = new URLSearchParams();
+-	if (process !== undefined && process !== null) {
+-		searchParams.append('process', String(process));
+-	}
+-
+-	let error = null;
+-
+-	const res = await fetch(`${WEBUI_API_BASE_URL}/files/?${searchParams.toString()}`, {
++	const response = await fetch(`${WEBUI_API_BASE_URL}/files/`, {
+ 		method: 'POST',
+ 		headers: {
+-			Accept: 'application/json',
+-			authorization: `Bearer ${token}`
++			Accept: 'application/json', Authorization: `Bearer ${token}`,
++			'Content-Type': 'application/octet-stream',
++			'X-File-Name': encodeURIComponent(file.name),
++			'X-File-Type': file.type || 'application/octet-stream',
++			'X-File-Size': String(file.size)
+ 		},
+-		body: data
+-	})
+-		.then(async (res) => {
+-			if (!res.ok) throw await res.json();
+-			return res.json();
+-		})
+-		.catch((err) => {
+-			error = err.detail || err.message;
+-			console.error(err);
+-			return null;
+-		});
+-
+-	if (error) {
+-		throw error;
+-	}
+-
+-	if (res && stream) {
+-		const status = await getFileProcessStatus(token, res.id);
+-
+-		if (status && status.ok) {
+-			const reader = status.body
+-				.pipeThrough(new TextDecoderStream())
+-				.pipeThrough(splitStream('\n'))
+-				.getReader();
+-
+-			while (true) {
+-				const { value, done } = await reader.read();
+-				if (done) {
+-					break;
+-				}
+-
+-				try {
+-					let lines = value.split('\n');
+-
+-					for (const line of lines) {
+-						if (line !== '') {
+-							console.log(line);
+-							if (line === 'data: [DONE]') {
+-								console.log(line);
+-							} else {
+-								let data = JSON.parse(line.replace(/^data: /, ''));
+-								console.log(data);
+-
+-								if (data?.error) {
+-									console.error(data.error);
+-									res.error = data.error;
+-								}
+-
+-								if (res?.data) {
+-									res.data = data;
+-								}
+-							}
+-						}
+-					}
+-				} catch (error) {
+-					console.log(error);
+-				}
+-			}
+-		}
+-	}
+-
+-	if (error) {
+-		throw error;
++		body: file
++	});
++	if (!response.ok) {
++		const error = await response.json().catch(() => ({}));
++		throw error.detail || 'Failed to upload file. Please try again.';
+ 	}
+-
+-	return res;
++	return response.json();
+ };
+ 
+ export const getFileProcessStatus = async (token: string, id: string) => {
+diff --git a/src/lib/components/chat/MessageInput.svelte b/src/lib/components/chat/MessageInput.svelte
+index 12f8a26..9a431e6 100644
+--- a/src/lib/components/chat/MessageInput.svelte
++++ b/src/lib/components/chat/MessageInput.svelte
+@@ -896,6 +896,10 @@
+ 	};
+ 
+ 	const uploadFileHandler = async (file, process = true, itemData = {}) => {
++		if ($temporaryChatEnabled) {
++			toast.error($i18n.t('Use a saved chat to upload files.'));
++			return null;
++		}
+ 		if ($_user?.role !== 'admin' && !($_user?.permissions?.chat?.file_upload ?? true)) {
+ 			toast.error($i18n.t('You do not have permission to upload files.'));
+ 			return null;
+@@ -991,7 +995,7 @@
+ 					};
+ 				}
+ 
+-				// During the file upload, file content is automatically extracted.
++				// Upload completes after the file and its metadata are committed.
+ 				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
+ 
+ 				if (uploadedFile) {
+@@ -1028,38 +1032,6 @@
+ 			} finally {
+ 				onUpdate({ file: fileItem });
+ 			}
+-		} else {
+-			// If temporary chat is enabled, we just add the file to the list without uploading it.
+-
+-			const content = await extractContentFromFile(file).catch((error) => {
+-				toast.error(
+-					$i18n.t('Failed to extract content from the file: {{error}}', { error: error })
+-				);
+-				return null;
+-			});
+-
+-			if (content === null) {
+-				fileItem.status = 'error';
+-				fileItem.error = $i18n.t('Failed to extract content from the file.');
+-				toast.error($i18n.t('Failed to extract content from the file.'));
+-				files = files.filter((item) => item?.itemId !== tempItemId);
+-				onUpdate({ file: fileItem });
+-				return null;
+-			} else {
+-				console.log('Extracted content from file:', {
+-					name: file.name,
+-					size: file.size,
+-					content: content
+-				});
+-
+-				fileItem.status = 'uploaded';
+-				fileItem.type = 'text';
+-				fileItem.content = content;
+-				fileItem.id = uuidv4(); // Temporary ID for the file
+-
+-				files = files;
+-				onUpdate({ file: fileItem });
+-			}
+ 		}
+ 	};
+ 
+@@ -1102,76 +1074,7 @@
+ 				return;
+ 			}
+ 
+-			if (file['type'].startsWith('image/')) {
+-				if (visionCapableModels.length === 0) {
+-					toast.error($i18n.t('Selected model(s) do not support image inputs'));
+-					return;
+-				}
+-
+-				const compressImageHandler = async (imageUrl, settings = {}, config = {}) => {
+-					// Quick shortcut so we don’t do unnecessary work.
+-					const settingsCompression = settings?.imageCompression ?? false;
+-					const configWidth = config?.file?.image_compression?.width ?? null;
+-					const configHeight = config?.file?.image_compression?.height ?? null;
+-
+-					// If neither settings nor config wants compression, return original URL.
+-					if (!settingsCompression && !configWidth && !configHeight) {
+-						return imageUrl;
+-					}
+-
+-					// Default to null (no compression unless set)
+-					let width = null;
+-					let height = null;
+-
+-					// If user/settings want compression, pick their preferred size.
+-					if (settingsCompression) {
+-						width = settings?.imageCompressionSize?.width ?? null;
+-						height = settings?.imageCompressionSize?.height ?? null;
+-					}
+-
+-					// Apply config limits as an upper bound if any
+-					if (configWidth && (width === null || width > configWidth)) {
+-						width = configWidth;
+-					}
+-					if (configHeight && (height === null || height > configHeight)) {
+-						height = configHeight;
+-					}
+-
+-					// Do the compression if required
+-					if (width || height) {
+-						return await compressImage(imageUrl, width, height);
+-					}
+-					return imageUrl;
+-				};
+-
+-				let reader = new FileReader();
+-
+-				reader.onload = async (event) => {
+-					let imageUrl = event.target.result;
+-
+-					// Compress the image if settings or config require it
+-					imageUrl = await compressImageHandler(imageUrl, $settings, $config);
+-
+-					if ($temporaryChatEnabled) {
+-						files = [
+-							...files,
+-							{
+-								type: 'image',
+-								url: imageUrl
+-							}
+-						];
+-					} else {
+-						const blob = await (await fetch(imageUrl)).blob();
+-						const compressedFile = new File([blob], file.name, { type: file.type });
+-
+-						uploadFileHandler(compressedFile, false);
+-					}
+-				};
+-
+-				reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
+-			} else {
+-				uploadFileHandler(file);
+-			}
++			uploadFileHandler(file, false);
+ 		});
+ 	};
+ 
+diff --git a/src/lib/components/chat/Messages/Markdown/MarkdownInlineTokens.svelte b/src/lib/components/chat/Messages/Markdown/MarkdownInlineTokens.svelte
+index a453653..94ec4a3 100644
+--- a/src/lib/components/chat/Messages/Markdown/MarkdownInlineTokens.svelte
++++ b/src/lib/components/chat/Messages/Markdown/MarkdownInlineTokens.svelte
+@@ -1,5 +1,6 @@
+ <script lang="ts">
+ 	import DOMPurify from 'dompurify';
++	import { downloadAttachment, downloadFile, isAttachmentLink } from '$lib/agent-files';
+ 	import { toast } from 'svelte-sonner';
+ 
+ 	import type { Token } from 'marked';
+@@ -76,6 +77,11 @@
+ 		{@const noteId = getNoteIdFromHref(token.href)}
+ 		{#if noteId}
+ 			<NoteLinkToken {noteId} href={token.href} />
++		{:else if isAttachmentLink(token.href)}
++			<button type="button" class="text-blue-600 dark:text-blue-400 underline break-all text-left"
++				title={$i18n.t('Download')} on:click={() => downloadAttachment(token.href, $i18n.t)}>
++				{token.text}
++			</button>
+ 		{:else if token.tokens}
+ 			<a
+ 				href={token.href}
+@@ -96,7 +102,12 @@
+ 			>
+ 		{/if}
+ 	{:else if token.type === 'image'}
+-		<Image src={token.href} alt={token.text} allowExternal={true} />
++		{#if isAttachmentLink(token.href)}
++			<button type="button" class="text-blue-600 dark:text-blue-400 underline break-all text-left"
++				on:click={() => downloadAttachment(token.href, $i18n.t)}>{token.text || $i18n.t('Download')}</button>
++		{:else}
++			<Image src={token.href} alt={token.text} allowExternal={true} />
++		{/if}
+ 	{:else if token.type === 'strong'}
+ 		<strong><svelte:self id={`${id}-strong`} tokens={token.tokens} {onSourceClick} /></strong>
+ 	{:else if token.type === 'em'}
+@@ -114,18 +125,8 @@
+ 			<KatexRenderer content={token.text} displayMode={token?.displayMode ?? false} />
+ 		{/if}
+ 	{:else if token.type === 'iframe'}
+-		<iframe
+-			src="{WEBUI_BASE_URL}/api/v1/files/{token.fileId}/content"
+-			title={token.fileId}
+-			width="100%"
+-			frameborder="0"
+-			on:load={(e) => {
+-				try {
+-					e.currentTarget.style.height =
+-						e.currentTarget.contentWindow.document.body.scrollHeight + 20 + 'px';
+-				} catch {}
+-			}}
+-		></iframe>
++		<button type="button" class="text-blue-600 dark:text-blue-400 underline break-all text-left"
++			on:click={() => downloadFile(token.fileId, false, $i18n.t)}>{$i18n.t('Download')}</button>
+ 	{:else if token.type === 'mention'}
+ 		<MentionToken {token} />
+ 	{:else if token.type === 'footnote'}
+diff --git a/src/lib/components/common/FileItem.svelte b/src/lib/components/common/FileItem.svelte
+index cf16950..115f923 100644
+--- a/src/lib/components/common/FileItem.svelte
++++ b/src/lib/components/common/FileItem.svelte
+@@ -5,6 +5,7 @@
+ 	import { formatFileSize } from '$lib/utils';
+ 	import { settings, showFileNavPath } from '$lib/stores';
+ 
++	import { downloadFile } from '$lib/agent-files';
+ 	import FileItemModal from './FileItemModal.svelte';
+ 	import GarbageBin from '../icons/GarbageBin.svelte';
+ 	import Spinner from './Spinner.svelte';
+@@ -57,6 +58,10 @@
+ 		: 'gap-1 rounded-2xl p-1.5'} text-left"
+ 	type="button"
+ 	on:click={async () => {
++		if (type === 'file' || item?.type === 'file') {
++			await downloadFile(item?.id ?? url, loading, $i18n.t);
++			return;
++		}
+ 		const filesystemPath = item?.type === 'filesystem' ? (item.path ?? item.url ?? item.id) : null;
+ 
+ 		if (filesystemPath) {
+diff --git a/src/lib/i18n/locales/zh-CN/translation.json b/src/lib/i18n/locales/zh-CN/translation.json
+index 6bda3b4..6aa58cc 100644
+--- a/src/lib/i18n/locales/zh-CN/translation.json
++++ b/src/lib/i18n/locales/zh-CN/translation.json
+@@ -1,4 +1,11 @@
+ {
++	"Preparing download…": "正在准备下载…",
++	"File is still being prepared. Please try again shortly.": "附件尚未就绪，请稍后重试。",
++	"Please sign in again to download this file.": "请重新登录后下载附件。",
++	"File is unavailable.": "附件暂不可用。",
++	"File is unavailable or you do not have access.": "附件不存在或无权访问。",
++	"Download failed. Please try again.": "下载失败，请重试。",
++	"Use a saved chat to upload files.": "请在普通对话中上传附件。",
+ 	"-1 for no limit, or a positive integer for a specific limit": "-1 表示无限制，正整数表示具体限制额度",
+ 	"(latest)": "（最新版）",
+ 	"(leave blank for to use commercial endpoint)": "（留空以使用商用端点）",

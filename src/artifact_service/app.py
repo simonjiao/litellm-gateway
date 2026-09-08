@@ -54,14 +54,20 @@ def create_app(
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next: Any):
-        if request.url.path == "/healthz" or request.url.path.startswith("/v1/transfers/"):
+        if request.url.path in {"/healthz", "/readyz"} or request.url.path.startswith(
+            "/v1/transfers/"
+        ):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
         expected = runtime.api_key.get_secret_value()
         if not authorization.startswith("Bearer ") or not secrets.compare_digest(
             authorization.removeprefix("Bearer ").encode(), expected.encode()
         ):
-            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+                headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
+            )
         return await call_next(request)
 
     @app.exception_handler(ArtifactNotFoundError)
@@ -79,6 +85,15 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        ready = await artifact_store.ready()
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={"status": "ready" if ready else "not_ready"},
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post("/v1/uploads", response_model=UploadTarget, status_code=201)
     async def create_upload(body: CreateUploadRequest) -> UploadTarget:
@@ -160,8 +175,11 @@ def create_app(
         response_model=ArtifactDescriptor,
     )
     async def complete_upload(
-        artifact_id: str, _: CompleteUploadRequest
+        artifact_id: str, body: CompleteUploadRequest
     ) -> ArtifactDescriptor:
+        # PUT is the commit point.  This endpoint remains a retry-safe compatibility
+        # inspection for older clients; upload_id intentionally has no commit role.
+        del body
         return await artifact_store.inspect(artifact_id)
 
     @app.get("/v1/artifacts/{artifact_id}", response_model=ArtifactDescriptor)

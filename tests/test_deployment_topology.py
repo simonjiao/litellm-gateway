@@ -100,7 +100,9 @@ def test_compose_deploys_open_webui_as_the_responses_client() -> None:
     assert webui["environment"]["AGENT_ARTIFACT_BASE_URL"] == (
         "http://artifact-service:8093"
     )
-    assert webui["environment"]["S3_ADDRESSING_STYLE"] == "path"
+    assert webui["environment"]["STORAGE_PROVIDER"] == "local"
+    assert not any(key.startswith("S3_") for key in webui["environment"])
+    assert "/readyz" in compose["services"]["artifact-service"]["healthcheck"]["test"][-1]
     assert webui["depends_on"]["gateway"]["condition"] == "service_healthy"
     assert webui["volumes"] == ["open-webui-data:/app/backend/data"]
     assert compose["volumes"]["open-webui-data"]["name"] == (

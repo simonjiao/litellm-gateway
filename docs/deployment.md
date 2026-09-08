@@ -143,7 +143,7 @@ MCP App 交互续租；终态 Response 不保持无限租约。Sandbox 过期后
 
 ## 实现约束
 
-Open WebUI 使用以 v0.11.1 为基线的派生镜像，内含同源 BFF、消息 Artifact 绑定和 publish intent。
+Open WebUI 前后端均以 v0.11.1 为固定基线，派生镜像内含同源 BFF、消息 Artifact 绑定和 publish intent。
 Artifact Service 复用现有 FastAPI/Pydantic、boto3 和签名授权代码，以 RustFS 中的不可变
 manifest 作为提交标记并保持无状态。
 
@@ -193,7 +193,7 @@ Workspace；用户消息附件必须在 Agent 执行前批量 checkout 到其消
 目录由可信控制面注入。BFF 在终态 Response 中为明确的 `sandbox:` URI 创建 publish intent 并
 立即处理；用户点击未就绪候选时推进同一操作，周期任务补偿到期记录。完整上传并绑定消息后才
 返回 Open WebUI 鉴权下载链接。
-RustFS 连接、Open WebUI S3 凭证和 Workspace STS 父凭证见 `.env.example`；Artifact Service
+RustFS 连接、Artifact Service 凭证和 Workspace STS 父凭证见 `.env.example`；Artifact Service
 使用独立、仅限 Artifact prefix 的部署凭证。`run-stack.sh` 首次启动时生成独立 restic
 repository password，后续复用。
 本地已有 rclone 业务凭证时，`scripts/configure-rustfs.py --remote rustfs` 将其导入 `.env` 并使用

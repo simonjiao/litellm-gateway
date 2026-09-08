@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
@@ -16,7 +15,6 @@ from fastapi import HTTPException, status
 from open_webui.models.chats import Chats
 from open_webui.models.files import Files
 from open_webui.models.users import Users
-from open_webui.storage.provider import Storage
 from open_webui.utils.access_control.files import has_access_to_file
 
 from sandbox_api.artifact_refs import sandbox_candidates
@@ -35,8 +33,8 @@ from .database import (
     get_response_binding,
     get_workspace,
     insert_workspace,
-    put_file_artifact,
     put_response_binding,
+    register_artifact_file,
     update_publish_intent,
 )
 from .settings import SETTINGS
@@ -48,6 +46,8 @@ _reconcile_task: asyncio.Task[None] | None = None
 _intent_tasks: dict[str, asyncio.Task[None]] = {}
 _intent_locks: dict[str, asyncio.Lock] = {}
 _chat_locks: dict[str, asyncio.Lock] = {}
+
+
 async def startup_workspace_bridge() -> None:
     global _client, _reconcile_task
     if not SETTINGS.enabled:
@@ -110,22 +110,15 @@ async def inject_workspace_context(
     previous_response_id = payload.get("previous_response_id")
     if not previous_response_id:
         user_message = metadata.get("user_message")
-        parent_message_id = (
-            user_message.get("parentId") if isinstance(user_message, dict) else None
-        )
+        parent_message_id = user_message.get("parentId") if isinstance(user_message, dict) else None
         if _valid_message_id(parent_message_id):
             await _require_message(chat_id, str(parent_message_id), "assistant")
             binding = await get_response_binding(chat_id, str(parent_message_id))
             if binding is None and existing_workspace_id is not None:
                 binding = await _await_response_binding(chat_id, str(parent_message_id))
             if binding is not None:
-                if (
-                    binding["workspace_id"] != workspace_id
-                    or binding["owner_user_id"] != user.id
-                ):
-                    raise HTTPException(
-                        status_code=409, detail="Previous Response binding changed"
-                    )
+                if binding["workspace_id"] != workspace_id or binding["owner_user_id"] != user.id:
+                    raise HTTPException(status_code=409, detail="Previous Response binding changed")
                 previous_response_id = binding["response_id"]
                 payload["previous_response_id"] = previous_response_id
             elif existing_workspace_id is not None:
@@ -137,9 +130,7 @@ async def inject_workspace_context(
         sandbox_id = None
     else:
         sandbox_id = f"sandbox_{uuid.uuid4().hex}"
-        workspace_grant = _grant(
-            "sandbox_create", workspace_id=workspace_id, sandbox_id=sandbox_id
-        )
+        workspace_grant = _grant("sandbox_create", workspace_id=workspace_id, sandbox_id=sandbox_id)
 
     checkout_grant, paths = await _checkout_grant(
         chat_id,
@@ -229,19 +220,6 @@ async def require_chat_write(chat_id: str, user: Any) -> Any:
     if chat is None or (chat.user_id != user.id and user.role != "admin"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
     return chat
-
-
-async def register_uploaded_file(request: Any, user: Any, uploaded: Any) -> None:
-    del request
-    if not SETTINGS.enabled:
-        return
-    file_id = uploaded.get("id") if isinstance(uploaded, dict) else getattr(uploaded, "id", None)
-    if not isinstance(file_id, str):
-        raise HTTPException(status_code=502, detail="Uploaded file has no stable id")
-    file = await Files.get_file_by_id(file_id)
-    if file is None:
-        raise HTTPException(status_code=502, detail="Uploaded file could not be inspected")
-    await _ensure_file_artifact(file, user)
 
 
 async def record_terminal_response(
@@ -434,64 +412,7 @@ async def _ensure_file_artifact(file: Any, user: Any) -> dict[str, Any]:
     existing = await get_file_artifact(file.id)
     if existing is not None:
         return json.loads(str(existing["descriptor_json"]))
-    if file.user_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="File owner cannot be delegated")
-    metadata = file.meta or {}
-    size = metadata.get("size")
-    digest = file.hash or metadata.get("file_hash")
-    if not isinstance(size, int) or not 0 <= size <= SETTINGS.max_file_bytes:
-        raise HTTPException(status_code=413, detail="File exceeds the Artifact limit")
-    path = Path(await asyncio.to_thread(Storage.get_file, file.path))
-    actual_size = await asyncio.to_thread(_regular_file_size, path)
-    if actual_size != size:
-        raise HTTPException(status_code=409, detail="Uploaded file content is unavailable")
-    if not isinstance(digest, str) or re.fullmatch(r"[a-fA-F0-9]{64}", digest) is None:
-        digest = await asyncio.to_thread(_sha256_file, path)
-    target = await _artifact_request(
-        "POST",
-        "/v1/uploads",
-        json_body={
-            "owner_id": file.user_id,
-            "filename": _safe_name(metadata.get("name") or file.filename),
-            "media_type": metadata.get("content_type") or "application/octet-stream",
-            "max_bytes": max(size, 1),
-            "expected_sha256": digest.lower(),
-            "subject_id": user.id,
-        },
-    )
-    if _client is None:
-        raise HTTPException(status_code=503, detail="Artifact bridge is not ready")
-    stream = await asyncio.to_thread(path.open, "rb")
-    try:
-        response = await _client.put(
-            str(target["url"]),
-            headers={
-                "Authorization": f"Bearer {target['token']}",
-                "Content-Type": metadata.get("content_type") or "application/octet-stream",
-                "Content-Length": str(size),
-            },
-            content=_async_file_chunks(stream),
-        )
-        response.raise_for_status()
-        descriptor = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail="Artifact upload failed") from exc
-    finally:
-        await asyncio.to_thread(stream.close)
-    if not isinstance(descriptor, dict) or descriptor.get("artifact_id") != target["artifact_id"]:
-        raise HTTPException(status_code=502, detail="Artifact upload returned invalid data")
-    await _artifact_request(
-        "POST",
-        f"/v1/uploads/{descriptor['artifact_id']}/complete",
-        json_body={"upload_id": target["upload_id"]},
-    )
-    await put_file_artifact(
-        file.id,
-        str(descriptor["artifact_id"]),
-        file.user_id,
-        json.dumps(descriptor, sort_keys=True, separators=(",", ":")),
-    )
-    return descriptor
+    raise HTTPException(status_code=409, detail="File is unavailable; please upload it again")
 
 
 async def _drive_intent(intent_id: str) -> None:
@@ -661,6 +582,11 @@ async def _finish_publish_operation(intent: dict[str, Any], operation: dict[str,
 
 
 async def _bind_published(intent: dict[str, Any]) -> None:
+    async with _chat_locks.setdefault(str(intent["chat_id"]), asyncio.Lock()):
+        await _bind_published_locked(intent)
+
+
+async def _bind_published_locked(intent: dict[str, Any]) -> None:
     descriptor_json = intent.get("descriptor_json")
     if not isinstance(descriptor_json, str):
         await _retry_intent(intent, "Uploaded Artifact descriptor is missing", binding=True)
@@ -675,19 +601,30 @@ async def _bind_published(intent: dict[str, Any]) -> None:
         return
     files = message.get("files") if isinstance(message.get("files"), list) else []
     artifact_id = str(descriptor["artifact_id"])
+    await register_artifact_file(artifact_id, str(intent["owner_user_id"]), descriptor)
     if not any(isinstance(item, dict) and item.get("id") == artifact_id for item in files):
         entry = {
             "type": "file",
             "id": artifact_id,
             "name": descriptor["filename"],
+            "size": descriptor["size"],
             "url": f"/api/agent/artifacts/{artifact_id}/download",
         }
-        attached = await Chats.add_message_files_by_id_and_message_id(
-            str(intent["chat_id"]), str(intent["assistant_message_id"]), [entry]
+        attached = await Chats.upsert_message_to_chat_by_id_and_message_id(
+            str(intent["chat_id"]),
+            str(intent["assistant_message_id"]),
+            {"files": [*files, entry]},
+            touch=False,
         )
         if attached is None:
             await _retry_intent(intent, "Assistant message could not be updated", binding=True)
             return
+    saved = await _require_message(
+        str(intent["chat_id"]), str(intent["assistant_message_id"]), "assistant"
+    )
+    if not any(item.get("id") == artifact_id for item in saved.get("files", [])):
+        await _retry_intent(intent, "Assistant attachment is not committed yet", binding=True)
+        return
     await bind_message_artifact(
         str(intent["chat_id"]),
         str(intent["assistant_message_id"]),
@@ -696,6 +633,17 @@ async def _bind_published(intent: dict[str, Any]) -> None:
         str(descriptor["filename"]),
     )
     await update_publish_intent(intent["id"], state="ready", error=None)
+    from open_webui.socket.main import get_event_emitter
+
+    emitter = await get_event_emitter(
+        {
+            "user_id": intent["owner_user_id"],
+            "chat_id": intent["chat_id"],
+            "message_id": intent["assistant_message_id"],
+        },
+        update_db=False,
+    )
+    await emitter({"type": "files", "data": {"files": saved.get("files", [])}})
 
 
 async def _retry_intent(intent: dict[str, Any], error: str, *, binding: bool = False) -> None:
@@ -738,9 +686,7 @@ async def _await_capture_barriers(workspace_id: str) -> None:
         await asyncio.sleep(0.1)
 
 
-async def _await_response_binding(
-    chat_id: str, assistant_message_id: str
-) -> dict[str, str] | None:
+async def _await_response_binding(chat_id: str, assistant_message_id: str) -> dict[str, str] | None:
     deadline = asyncio.get_running_loop().time() + 30
     while asyncio.get_running_loop().time() < deadline:
         binding = await get_response_binding(chat_id, assistant_message_id)
@@ -858,10 +804,7 @@ async def _require_message(chat_id: str, message_id: str, role: str) -> dict[str
 
 
 def _valid_message_id(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None
-    )
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None
 
 
 def _safe_name(value: Any) -> str:
@@ -887,23 +830,3 @@ def _claim_string(claims: dict[str, Any], name: str) -> str:
     if not isinstance(value, str) or not value:
         raise HTTPException(status_code=403, detail=f"Transfer {name} is invalid")
     return value
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-async def _async_file_chunks(stream: Any):
-    while True:
-        chunk = await asyncio.to_thread(stream.read, 1024 * 1024)
-        if not chunk:
-            return
-        yield chunk
-
-
-def _regular_file_size(path: Path) -> int | None:
-    return path.stat().st_size if path.is_file() else None

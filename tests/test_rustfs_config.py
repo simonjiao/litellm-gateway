@@ -41,7 +41,7 @@ def test_rclone_rustfs_configuration_updates_env_without_printing_credentials(
     assert "test-secret-key" not in result.stdout
     configured = env_file.read_text()
     assert "RUSTFS_ENDPOINT=http://rustfs.internal:9000" in configured
-    assert "OPEN_WEBUI_S3_ACCESS_KEY_ID=test-access-key" in configured
+    assert "OPEN_WEBUI_S3_" not in configured
     assert "WORKSPACE_S3_PARENT_ACCESS_KEY=test-access-key" in configured
     assert "WORKSPACE_S3_CREDENTIAL_MODE=static" in configured
     assert "SANDBOX_MANAGER_STORAGE_ENABLED=true" in configured

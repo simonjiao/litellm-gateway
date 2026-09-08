@@ -3,17 +3,20 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any
 
+import anyio
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from open_webui.models.chats import Chats
 from open_webui.utils.auth import get_verified_user
 from pydantic import BaseModel, ConfigDict, Field
 
 from sandbox_api.grants import GrantError, verify_grant
 
-from .database import consume_transfer_nonce
+from .database import consume_transfer_nonce, get_candidate_intent, get_response_binding
 from .settings import SETTINGS
 from .workspace import (
+    _schedule_intent,
     advance_candidate,
     artifact_download_target,
     record_terminal_response,
@@ -68,23 +71,56 @@ async def publish_artifact(
     )
 
 
-@router.get("/artifacts/{artifact_id}/download")
+@router.get("/artifacts/{artifact_id}/download", response_model=None)
 async def download_artifact(
     artifact_id: str,
     user: Annotated[Any, Depends(get_verified_user)],
-) -> StreamingResponse:
+    check: bool = False,
+) -> StreamingResponse | JSONResponse:
     if re.fullmatch(r"artifact_[a-f0-9]{32}", artifact_id) is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
     target = await artifact_download_target(artifact_id, user)
+    if check:
+        return JSONResponse(
+            {"url": f"/api/agent/artifacts/{artifact_id}/download"},
+            headers={"Cache-Control": "no-store"},
+        )
     return await _proxy_download(target)
 
 
-async def uploaded_file_download(file_id: str, user: Any) -> StreamingResponse | None:
+@router.get("/files/{file_id}/download", response_model=None)
+async def uploaded_file_download(
+    file_id: str, user: Annotated[Any, Depends(get_verified_user)], check: bool = False
+) -> StreamingResponse | JSONResponse:
     artifact_id = await uploaded_file_artifact(file_id)
     if artifact_id is None:
-        return None
-    target = await artifact_download_target(artifact_id, user)
-    return await _proxy_download(target)
+        raise HTTPException(status_code=404, detail="File is unavailable")
+    return await download_artifact(artifact_id, user, check)
+
+
+@router.get("/candidates/download", response_model=None)
+async def download_candidate(
+    chat_id: str,
+    message_id: str,
+    path: str,
+    user: Annotated[Any, Depends(get_verified_user)],
+    check: bool = False,
+) -> StreamingResponse | JSONResponse:
+    if await Chats.get_chat_by_id_for_user(chat_id, user) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    relative = _candidate_relative(path, message_id)
+    binding = await get_response_binding(chat_id, message_id)
+    intent = await get_candidate_intent(chat_id, message_id, relative)
+    if binding is None or intent is None:
+        raise HTTPException(status_code=409, detail="File is still being prepared")
+    if intent["response_id"] != binding["response_id"]:
+        raise HTTPException(status_code=404, detail="File is unavailable")
+    if intent["state"] != "ready":
+        if intent["state"] in {"failed", "expired"}:
+            raise HTTPException(status_code=410, detail="File could not be prepared")
+        _schedule_intent(str(intent["id"]))
+        raise HTTPException(status_code=409, detail="File is still being prepared")
+    return await download_artifact(str(intent["artifact_id"]), user, check)
 
 
 async def _proxy_download(target: dict[str, Any]) -> StreamingResponse:
@@ -92,14 +128,15 @@ async def _proxy_download(target: dict[str, Any]) -> StreamingResponse:
     token = target.get("token")
     if not isinstance(url, str) or not isinstance(token, str):
         raise HTTPException(status_code=502, detail="Artifact download target is invalid")
-    client = httpx.AsyncClient(timeout=None, trust_env=False)
+    client = httpx.AsyncClient(timeout=httpx.Timeout(3600, connect=10), trust_env=False)
+    response = None
     try:
-        request = client.build_request(
-            "GET", url, headers={"Authorization": f"Bearer {token}"}
-        )
+        request = client.build_request("GET", url, headers={"Authorization": f"Bearer {token}"})
         response = await client.send(request, stream=True)
         response.raise_for_status()
     except httpx.HTTPError as exc:
+        if response is not None:
+            await response.aclose()
         await client.aclose()
         raise HTTPException(status_code=502, detail="Artifact download failed") from exc
 
@@ -108,14 +145,16 @@ async def _proxy_download(target: dict[str, Any]) -> StreamingResponse:
             async for chunk in response.aiter_bytes():
                 yield chunk
         finally:
-            await response.aclose()
-            await client.aclose()
+            with anyio.CancelScope(shield=True):
+                await response.aclose()
+                await client.aclose()
 
     headers = {
         name: value
         for name in ("content-length", "content-disposition", "etag")
         if (value := response.headers.get(name)) is not None
     }
+    headers["Cache-Control"] = "no-store"
     return StreamingResponse(
         content(),
         media_type=response.headers.get("content-type", "application/octet-stream"),
