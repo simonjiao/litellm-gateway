@@ -215,9 +215,24 @@ async def test_recoverable_previous_response_requires_fresh_workspace_grant() ->
 
 
 @pytest.mark.asyncio
-async def test_cancel_interrupts_turn_without_destroying_reusable_sandbox() -> None:
+@pytest.mark.parametrize("startup_race", [False, True])
+async def test_cancel_interrupts_turn_without_destroying_reusable_sandbox(
+    monkeypatch: pytest.MonkeyPatch, startup_race: bool
+) -> None:
     settings, worker_settings = _settings()
     sandbox = InProcessSandbox(worker_settings)
+    rpc = sandbox.rpc
+    interrupts = 0
+
+    async def interrupt_when_ready(sandbox_id: str, method: str, params: dict[str, Any]) -> Any:
+        nonlocal interrupts
+        if method == "turn/interrupt":
+            interrupts += 1
+            if startup_race and interrupts == 1:
+                raise UpstreamProtocolError("Turn is not interruptible yet")
+        return await rpc(sandbox_id, method, params)
+
+    monkeypatch.setattr(sandbox, "rpc", interrupt_when_ready)
     app = create_app(settings, sandbox_client=sandbox)
 
     async with app.router.lifespan_context(app):
@@ -236,9 +251,19 @@ async def test_cancel_interrupts_turn_without_destroying_reusable_sandbox() -> N
         events = [event async for event in stream]
 
         assert events[-1]["type"] == "response.incomplete"
-        assert (await app.state.service.retrieve(response_id))["status"] == "incomplete"
+        cancelled = await app.state.service.retrieve(response_id)
+        assert cancelled["status"] == "incomplete"
+        assert cancelled["incomplete_details"] is None
+        assert interrupts == (2 if startup_race else 1)
         assert any(method == "turn/interrupt" for _, method, _ in sandbox.rpc_calls)
         assert sandbox.terminated == []
+        continued = await app.state.service.create_non_streaming(
+            CreateResponseRequest(
+                model="gpt-5.6-terra", input="say hello", previous_response_id=response_id
+            )
+        )
+        assert continued["status"] == "completed"
+        assert len(sandbox.started) == 1
 
 
 @pytest.mark.asyncio

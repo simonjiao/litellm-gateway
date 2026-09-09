@@ -108,21 +108,30 @@ class CodexResponsesService:
         if active is None or active.cancel_requested:
             return record.to_response()
         active.cancel_requested = True
-        try:
-            await self._sandbox.rpc(
-                active.sandbox_id,
-                "turn/interrupt",
-                {"threadId": active.thread_id, "turnId": active.turn_id},
-            )
-        except Exception:
-            logger.warning(
-                "Codex interrupt failed for %s; terminating sandbox %s",
-                response_id,
-                active.sandbox_id,
-                exc_info=True,
-            )
-            with suppress(Exception):
-                await self._sandbox.terminate_sandbox(active.sandbox_id)
+        for attempt in range(3):
+            try:
+                await self._sandbox.rpc(
+                    active.sandbox_id,
+                    "turn/interrupt",
+                    {"threadId": active.thread_id, "turnId": active.turn_id},
+                )
+                break
+            except Exception:
+                if record.status != "in_progress":
+                    break
+                if attempt < 2:
+                    # app-server can acknowledge turn/start before the turn is
+                    # interruptible. Retry that brief startup window first.
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                    continue
+                logger.warning(
+                    "Codex interrupt failed for %s; terminating sandbox %s",
+                    response_id,
+                    active.sandbox_id,
+                    exc_info=True,
+                )
+                with suppress(Exception):
+                    await self._sandbox.terminate_sandbox(active.sandbox_id)
         return record.to_response()
 
     async def delete(self, response_id: str) -> dict[str, Any]:

@@ -84,7 +84,12 @@ async def inject_workspace_context(
     del request
     if not SETTINGS.enabled or not isinstance(metadata, dict):
         return payload
-    if metadata.get("internal") or metadata.get("task"):
+    if metadata.get("task"):
+        # Native background tasks add this Chat Completions default. The Agent
+        # runtime has no token-limit option; keep explicit chat limits rejected.
+        payload.pop("max_output_tokens", None)
+        return payload
+    if metadata.get("internal"):
         return payload
     chat_id = metadata.get("chat_id")
     user_message_id = metadata.get("user_message_id")
@@ -105,27 +110,31 @@ async def inject_workspace_context(
         raise HTTPException(status_code=409, detail="Assistant message binding is invalid")
     existing_workspace_id = await get_workspace(chat_id)
     workspace_id = existing_workspace_id or await ensure_chat_workspace(chat_id)
-    await _await_capture_barriers(workspace_id)
-
     previous_response_id = payload.get("previous_response_id")
+    pending_user_messages = 1
     if not previous_response_id:
         user_message = metadata.get("user_message")
         parent_message_id = user_message.get("parentId") if isinstance(user_message, dict) else None
         if _valid_message_id(parent_message_id):
-            await _require_message(chat_id, str(parent_message_id), "assistant")
-            binding = await get_response_binding(chat_id, str(parent_message_id))
-            if binding is None and existing_workspace_id is not None:
-                binding = await _await_response_binding(chat_id, str(parent_message_id))
+            binding, pending_user_messages = await _previous_response_binding(
+                chat_id, str(parent_message_id)
+            )
             if binding is not None:
                 if binding["workspace_id"] != workspace_id or binding["owner_user_id"] != user.id:
                     raise HTTPException(status_code=409, detail="Previous Response binding changed")
                 previous_response_id = binding["response_id"]
                 payload["previous_response_id"] = previous_response_id
-            elif existing_workspace_id is not None:
-                raise HTTPException(
-                    status_code=409, detail="Previous Response binding is not ready"
-                )
+    await _await_capture_barriers(workspace_id)
     if previous_response_id:
+        inputs = payload.get("input")
+        if isinstance(inputs, list):
+            user_indices = [
+                index
+                for index, item in enumerate(inputs)
+                if isinstance(item, dict) and item.get("role") == "user"
+            ]
+            if len(user_indices) >= pending_user_messages:
+                payload["input"] = inputs[user_indices[-pending_user_messages] :]
         workspace_grant = _grant("workspace_inspect", workspace_id=workspace_id)
         sandbox_id = None
     else:
@@ -694,6 +703,38 @@ async def _await_response_binding(chat_id: str, assistant_message_id: str) -> di
             return binding
         await asyncio.sleep(0.1)
     return None
+
+
+async def _previous_response_binding(
+    chat_id: str, message_id: str
+) -> tuple[dict[str, str] | None, int]:
+    seen: set[str] = set()
+    pending_user_messages = 1
+    while _valid_message_id(message_id):
+        if message_id in seen:
+            raise HTTPException(status_code=409, detail="Chat message ancestry is invalid")
+        seen.add(message_id)
+        message = await _require_message(chat_id, message_id, "assistant")
+        binding = await get_response_binding(chat_id, message_id)
+        if binding is None and not message.get("error"):
+            binding = await _await_response_binding(chat_id, message_id)
+        if binding is not None:
+            return binding, pending_user_messages
+        # An empty rejected/stopped attempt has no Agent turn to continue.
+        # Keep it in the chat and resume the nearest accepted ancestor.
+        if (
+            message.get("content")
+            or message.get("output")
+            or not (message.get("error") or message.get("done"))
+        ):
+            raise HTTPException(status_code=409, detail="Previous Response binding is not ready")
+        parent_id = message.get("parentId")
+        if not _valid_message_id(parent_id):
+            return None, pending_user_messages
+        parent = await _require_message(chat_id, str(parent_id), "user")
+        message_id = parent.get("parentId")
+        pending_user_messages += 1
+    return None, pending_user_messages
 
 
 async def _publish_reconciler() -> None:

@@ -168,6 +168,10 @@ Adapter 直接连接 Worker，并在执行期间续租。
 Adapter 继续消费 Worker 事件。取消先调用 Worker 中断接口，失败时请求 Manager 销毁
 Sandbox。Sandbox 过期时返回 `sandbox_unavailable`，不静默切换实例。
 
+Open WebUI 的“停止回答”显式取消上游 Response，包括 Worker 尚在启动时的请求；停止和失败
+状态均持久化为已结束。空的失败消息保留在对话中，后续消息沿当前分支查找最近的 Response
+绑定，仅发送其后的新增输入；不跳过仍在运行或有内容却缺少绑定的回答。
+
 销毁 Sandbox 只回收计算实例，不等于删除可恢复 Workspace。需要持久化的 Workspace 在停止
 写入后进入后台 checkpoint，成功提交远端 revision 后按保留策略延迟清理本地卷；再次使用时
 restore 到新卷。临时 Workspace 可随 Sandbox 回收。只保存 `/workspace`，不保存进程、内存、

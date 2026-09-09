@@ -42,6 +42,8 @@ Worker 启动 Codex 会话时使用：
 | conversation/compact/WebSocket | 部分支持 | 不支持 | 连续对话仅使用 `previous_response_id` |
 | 持久化/多实例恢复 | 可配置 | 不支持 | Adapter 状态为单进程内存 |
 
+取消返回 `incomplete`；Runtime 的取消原因不写入 Responses API 的限定原因枚举。
+
 MCP Apps 的资源、interaction 和 side-event 是本项目扩展；`mcp_call` item 与相关 Responses 事件保持标准形态。
 
 ## 文件边界
@@ -67,6 +69,7 @@ Codex app-server 在 `turn/start` 后生成自己的 `turn.id`，Adapter 只用�
 不在响应、日志或事件中返回。没有 Workspace 授权的新 Sandbox 使用临时 Workspace；签名无效、
 过期或绑定不匹配时在创建 Sandbox 前拒绝。`previous_response_id` 必须继续绑定原 Workspace，不能
 通过新授权切换。
+Gateway 不自动重放带单次授权的请求；失败后由新请求重新取得授权。
 
 ## 请求映射
 

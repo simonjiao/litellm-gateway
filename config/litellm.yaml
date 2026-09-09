@@ -18,6 +18,9 @@ model_list:
       api_key: os.environ/CODEX_ADAPTER_API_KEY
       timeout: 3600
 
+router_settings:
+  num_retries: 0
+
 litellm_settings:
   request_timeout: 3600
   drop_params: false

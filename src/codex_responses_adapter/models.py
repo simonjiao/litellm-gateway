@@ -172,6 +172,13 @@ class ResponseRecord:
 
     def to_response(self) -> dict[str, Any]:
         self.sync_message_item()
+        incomplete_details = self.incomplete_details
+        # Runtime reasons such as "cancelled" are not Responses API enum values.
+        if incomplete_details and incomplete_details.get("reason") not in {
+            "max_output_tokens",
+            "content_filter",
+        }:
+            incomplete_details = None
         return {
             "id": self.id,
             "object": "response",
@@ -179,7 +186,7 @@ class ResponseRecord:
             "status": self.status,
             "background": False,
             "error": self.error,
-            "incomplete_details": self.incomplete_details,
+            "incomplete_details": incomplete_details,
             "instructions": self.instructions,
             "max_output_tokens": None,
             "model": self.model,

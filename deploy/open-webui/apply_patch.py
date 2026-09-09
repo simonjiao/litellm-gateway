@@ -36,6 +36,59 @@ replace_once(
     "    requested_model = payload.get('model')\n",
 )
 
+replace_once(
+    "open_webui/routers/openai.py",
+    "        r = await session.request(\n"
+    "            method='POST',\n"
+    "            url=request_url,\n"
+    "            data=payload,\n",
+    "        from agent_open_webui.responses import request_response, stream_response\n\n"
+    "        r = await request_response(session, metadata, is_responses,\n"
+    "            method='POST',\n"
+    "            url=request_url,\n"
+    "            data=payload,\n",
+)
+
+replace_once(
+    "open_webui/routers/openai.py",
+    "                stream_wrapper(r),\n",
+    "                stream_response(stream_wrapper(r), metadata),\n",
+)
+
+replace_once(
+    "open_webui/main.py",
+    "                async def emit_cancel_event():\n"
+    "                    event_emitter = await get_event_emitter(metadata)\n",
+    "                async def emit_cancel_event():\n"
+    "                    from agent_open_webui.responses import cancel_response\n\n"
+    "                    try:\n"
+    "                        await cancel_response(metadata)\n"
+    "                    except Exception:\n"
+    "                        log.exception('Failed to cancel upstream Agent response')\n"
+    "                    if (is_saved_chat_id(metadata.get('chat_id'))\n"
+    "                            and metadata.get('message_id')):\n"
+    "                        await Chats.upsert_message_to_chat_by_id_and_message_id(\n"
+    "                            metadata['chat_id'], metadata['message_id'], {'done': True},\n"
+    "                        )\n"
+    "                    event_emitter = await get_event_emitter(metadata)\n",
+)
+
+replace_once(
+    "open_webui/main.py",
+    "                                'error': {'content': error_detail},\n",
+    "                                'error': {'content': error_detail},\n"
+    "                                'done': True,\n",
+)
+
+replace_once(
+    "open_webui/main.py",
+    "        finally:\n            # Clean up MCP clients.",
+    "        finally:\n"
+    "            from agent_open_webui.responses import finish_response\n\n"
+    "            finish_response(metadata)\n"
+    "            # Clean up MCP clients.",
+)
+
 
 def replace_endpoint(route: str, definition: str) -> None:
     path = ROOT / "open_webui/routers/files.py"

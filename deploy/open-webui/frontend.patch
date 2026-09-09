@@ -106,6 +106,37 @@ index 433fe2d..1fbe42b 100644
  };
  
  export const getFileProcessStatus = async (token: string, id: string) => {
+diff --git a/src/lib/components/chat/Chat.svelte b/src/lib/components/chat/Chat.svelte
+index 9aa7ad7..c7a8571 100644
+--- a/src/lib/components/chat/Chat.svelte
++++ b/src/lib/components/chat/Chat.svelte
+@@ -3146,7 +3146,8 @@
+ 		// Check if the assistant is still generating the main response
+ 		// (don't block on background tasks like title gen, follow-ups, tags)
+ 		const lastMessage = history.currentId ? history.messages[history.currentId] : null;
+-		const isGenerating = lastMessage && lastMessage.role === 'assistant' && !lastMessage.done;
++		const isGenerating =
++			lastMessage && lastMessage.role === 'assistant' && !lastMessage.done && !lastMessage.error;
+ 
+ 		if (isGenerating) {
+ 			if ($settings?.enableMessageQueue ?? true) {
+@@ -3168,16 +3169,6 @@
+ 			}
+ 		}
+ 
+-		if (history?.currentId) {
+-			const currentMessage = history.messages[history.currentId];
+-
+-			if (currentMessage.error && !currentMessage.content) {
+-				// Error in response
+-				toast.error($i18n.t(`Oops! There was an error in the previous response.`));
+-				return;
+-			}
+-		}
+-
+ 		// Clear input and submit
+ 		messageInput?.setText('');
+ 		prompt = '';
 diff --git a/src/lib/components/chat/MessageInput.svelte b/src/lib/components/chat/MessageInput.svelte
 index 12f8a26..9a431e6 100644
 --- a/src/lib/components/chat/MessageInput.svelte
